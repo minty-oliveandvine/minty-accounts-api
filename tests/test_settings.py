@@ -10,10 +10,19 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize("missing", ["SECRET_KEY", "FLASK_FALLBACK_URL"])
+REQUIRED = {
+    "SECRET_KEY": "x",
+    "FLASK_FALLBACK_URL": "http://localhost:8000",
+    "DATABASE_URL": "postgresql://postgres@localhost:5432/postgres",
+    "XERO_CLIENT_ID": "id",
+    "XERO_CLIENT_SECRET": "secret",
+}
+
+
+@pytest.mark.parametrize("missing", list(REQUIRED))
 def test_a_missing_required_value_stops_the_start(missing, tmp_path):
-    env = {k: v for k, v in os.environ.items() if k not in ("SECRET_KEY", "FLASK_FALLBACK_URL")}
-    env.update({"SECRET_KEY": "x", "FLASK_FALLBACK_URL": "http://localhost:8000"})
+    env = {k: v for k, v in os.environ.items() if k not in REQUIRED}
+    env.update(REQUIRED)
     env[missing] = ""
     env["DJANGO_SETTINGS_MODULE"] = "config.settings"
     # Run from a folder with no .env, importing this repo's config by path.

@@ -123,7 +123,9 @@ def header_values(result, name):
     return [v for k, v in result["headers"] if k.lower() == name.lower()]
 
 
-def test_health_is_django_and_never_reaches_flask(app):
+# db: Django's request_finished closes an unusable database connection, which on the Postgres pass
+# counts as database access (health itself reads nothing).
+def test_health_is_django_and_never_reaches_flask(app, db):
     result = call(app, "/health")
     assert result["status"].startswith("200")
     assert json.loads(result["body"]) == {"status": "ok", "service": "minty-accounts-api"}

@@ -9,6 +9,7 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 | Path | Answered by |
 |---|---|
 | `/health` | Django: `{"status": "ok", "service": "minty-accounts-api"}`. It never calls Flask |
+| `POST /api/internal/xero/token` | Django (Phase 2): the Xero token service, below |
 | anything else | Flask, through the fall-through |
 
 ## The fall-through (`core/fallthrough.py`)
@@ -57,11 +58,70 @@ host:
 Behind the fall-through, a request arrives on Flask's internal address, and anyone can call that
 address directly with any `Host`.
 
+## The Xero token service (Phase 2, 2026-11-05)
+
+`POST /api/internal/xero/token` (`xero/views.py`, `xero/services/tokens.py`) hands a
+currently-valid Xero access token to minty-petty-cash-api, minty-onboarding-api and
+minty-payment-request-api. They never refresh: Xero rotates the refresh token on every use, so
+two refreshers would leave a dead token and break the connection until someone reconnects.
+
+**Who may ask:** a Minty backend with a 60-second HS256 assertion
+(`minty_shared.tokens.service_assertion`, the shared `SECRET_KEY`), `scope` =
+`xero-access-token`, decoded with every backend's 60 s skew. The company is the assertion's
+`entity_id`, never the body. Any failure is a 401.
+
+**The answers** are Flask's `jsonify` bytes (sorted keys, compact, a trailing newline), because
+the callers' `main` reads them:
+
+| Status | Body |
+|---|---|
+| 200 | `{"access_token":"…","xero_org_id":"…"}` |
+| 401 | `{"message":"unauthorized","status":"error"}` |
+| 409 | `{"message":"No valid Xero token for this entity","status":"reconnect_required"}` |
+
+A 409 means a person has to reconnect, or another refresh is still running; it is never a server
+error. A company with no Xero org, no `connected_by_user_id`, a missing connector, or a connector
+with no `user_token` bundle all answer 409, as does an `entity_id` that is not a uuid.
+
+**The token** belongs to the person who connected the company (`entities.connected_by_user_id`)
+and lives in `user_token`. It counts as fresh while it has more than 300 s left
+(`access_token_expires_in` after `access_token_obtained_at`).
+
+**The refresh lock:**
+- Postgres `pg_try_advisory_lock(1481594447, hashtext('xero_refresh:<user id>'))`, polled every
+  0.1 s for up to 5 s and held across the call to Xero. That call is what spends the refresh token.
+- It is Flask's exact key, so while Flask still refreshes through its own service path, the two
+  wait for each other.
+- Under the lock the row is read again. A fresh token is handed out, even if the wait ran out.
+- If the wait ran out and the token is stale: 409, and no refresh.
+- Otherwise it refreshes.
+
+**The refresh:**
+- `POST https://identity.xero.com/connect/token` with Basic `XERO_CLIENT_ID:XERO_CLIENT_SECRET`
+  and `grant_type=refresh_token`; timeout 5 s connect, 10 s read.
+- A refusal, an error, or a 200 with no access token: 409, and nothing is written, so the same
+  refresh token is presented next time.
+- Success writes each part Xero sent and stamps `access_token_obtained_at` and
+  `refresh_token_last_used_at` with now.
+- A failed write after Xero rotated the token is not swallowed: it is a 500, logged. Flask
+  returned a 409 there.
+
+**Not covered by the lock:** Flask's other refreshers take none (`ensure_valid_token` from
+`/refresh_token`, `billing_sync.py`, `suppliers.py`, the onboarding and settings services).
+They move in Phase 4.
+
+**Locally,** the databases are production copies, so a real refresh would rotate a production
+token and break that company's connection. The local check on 2026-11-05 ran with outbound
+HTTPS sent to a dead proxy. Through accounts-api and through Flask, the 401 (no bearer, wrong
+scope) and the 409 (no Xero org) matched Flask's bytes (the local Flask runs in debug mode and
+pretty-prints; production's are compact). A stale token went through the lock, its refresh was
+blocked, and it answered 409 with nothing written.
+
 ## Later phases
 
 Each phase moves a group of Flask's routes into `config/urls.py`: a path that resolves in Django
-stops falling through. The order and the boundaries are in the Flask retirement plan; Phase 2 is
-the Xero token service (`POST /api/internal/xero/token`).
+stops falling through. The order and the boundaries are in the Flask retirement plan; Phase 3
+moves Petty Cash's Xero work into minty-petty-cash-api.
 
 ## Tests
 
@@ -75,8 +135,14 @@ application directly. It covers:
 - the forwarded headers, the trace and the hop-by-hop headers;
 - the 413 and the 502.
 
-`tests/test_settings.py` covers the refusal to start without `SECRET_KEY` or
-`FLASK_FALLBACK_URL`.
+`tests/test_settings.py` covers the refusal to start without each required value.
+
+`xero/tests/test_internal_token.py` (Postgres only) has three groups:
+- Flask's five characterisation tests, ported;
+- the exact bytes, the company read from the claims, the 409 cases, POST only, and the route
+  owning its path;
+- the lock, held by a second session as Flask would hold it: a stale token is not refreshed, a
+  fresh one is still handed out, and the lock is released afterwards.
 
 Checked locally on 2026-11-05: through 8002 to Flask on 8000, the following matched Flask
 directly, headers and body:

@@ -1,13 +1,21 @@
 # Runtime - Python 3.13.
 django>=5.2,<6.0
+psycopg[binary]>=3.2,<4.0
 python-dotenv>=1.0,<2.0
 gunicorn>=23.0,<24.0
 # The fall-through to Flask (core/fallthrough.py; why not requests is written there).
 urllib3>=2.2,<3.0
+# Xero's /connect/token (xero/services/tokens.py), as Flask calls it; the tests stub
+# requests.post exactly as Flask's do.
+requests>=2.28,<3.0
 # The one log line every Minty backend writes (minty_shared.logctx). An immutable tag: a change
 # is a new tag, bumped in every backend. The tag's archive, not git+: the slim Docker images
 # have no git.
-minty-shared @ https://github.com/minty-oliveandvine/minty-shared-py/archive/refs/tags/v0.4.tar.gz
+# Extras: jwt (decode_bearer), django (the request logging middleware).
+minty-shared[jwt,django] @ https://github.com/minty-oliveandvine/minty-shared-py/archive/refs/tags/v0.4.tar.gz
+# The schema's models (every table, generated from 01_schema_rebased.sql) and the test-database
+# builder. An immutable tag, pinned by archive like minty-shared.
+minty-db @ https://github.com/minty-oliveandvine/minty-db/archive/refs/tags/v0.4.tar.gz
 
 # Dev / testing
 pytest>=8.0
