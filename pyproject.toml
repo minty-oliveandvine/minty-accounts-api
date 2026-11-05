@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Minty: shared CI checks it out beside this repo (python-api.yml) while no minty-db is pinned.
+exclude = [".venv", "logs", "Minty"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+  # long docstrings and comments are the house style (see the other Django services)
+  "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "core"]
