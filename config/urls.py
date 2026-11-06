@@ -3,7 +3,7 @@
 from django.http import JsonResponse
 from django.urls import path
 
-from hub import contact, entities, profile, public, terms
+from hub import company, contact, entities, invitations, onboarding, profile, public, terms
 from xero.views import internal_xero_access_token, internal_xero_sync
 
 
@@ -28,4 +28,21 @@ urlpatterns = [
     path("api/me/terms", terms.terms_status, name="terms_status"),
     path("api/me/terms/accept", terms.terms_accept, name="terms_accept"),
     path("api/me/contact", contact.my_contact, name="my_contact"),
+    # Phase 5C: a company's Users and Entity & Integration tabs.
+    path("api/me/company/users", company.company_users, name="company_users"),
+    path("api/me/company/users/<str:member_id>", company.company_member, name="company_member"),
+    path("api/me/company/invitations", company.company_invite, name="company_invite"),
+    path("api/me/company/invitations/<str:invitation_id>/cancel", company.invitation_cancel, name="invitation_cancel"),
+    path("api/me/company/invitations/<str:invitation_id>/resend", company.invitation_resend, name="invitation_resend"),
+    path("api/me/company/integration", company.company_integration, name="company_integration"),
+    path("api/me/company/xero/disconnect", company.company_xero_disconnect, name="company_xero_disconnect"),
+    path("api/me/company/xero/release", company.company_xero_release, name="company_xero_release"),
+    # Phase 5D: the onboarding wizard's routes minty-onboarding-api and minty-subscription-api forward to.
+    path("api/onboarding/modules", onboarding.onboarding_modules, name="onboarding_modules"),
+    path("api/onboarding/invite", onboarding.onboarding_invite, name="onboarding_invite"),
+    path("api/onboarding/invite/resend", onboarding.onboarding_invite_resend, name="onboarding_invite_resend"),
+    path("api/onboarding/invite/cancel", onboarding.onboarding_invite_cancel, name="onboarding_invite_cancel"),
+    path("api/onboarding/xero/disconnect", onboarding.onboarding_xero_disconnect, name="onboarding_xero_disconnect"),
+    path("api/onboarding/xero/release", onboarding.onboarding_xero_release, name="onboarding_xero_release"),
+    path("static/img/new_logo.png", invitations.logo, name="invitation_logo"),
 ]

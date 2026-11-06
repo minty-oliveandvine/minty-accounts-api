@@ -13,6 +13,10 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 | `POST /api/internal/xero/sync` | Django (Phase 3): the one Xero account/contact sync, below |
 | `GET /auth/notices`, `GET /legal/current`, `POST /legal/invite-terms-status` | Django (Phase 5A, `hub/public.py`) |
 | `GET /api/me/entities`, `GET/PATCH /api/me/profile`, `GET /api/me/terms`, `POST /api/me/terms/accept`, `POST /api/me/contact` | Django (Phase 5B, `hub/`) |
+| `GET /api/me/company/users`, `PATCH/DELETE /api/me/company/users/<id>`, `POST /api/me/company/invitations`, `POST .../invitations/<id>/cancel` and `/resend`, `GET/PATCH /api/me/company/integration` | Django (Phase 5C, `hub/company.py`) |
+| `POST /api/me/company/xero/disconnect`, `POST /api/me/company/xero/release` | Django (Phase 5D, `hub/company.py`, `xero/services/disconnect.py`) |
+| `POST /api/onboarding/modules`, `GET/POST /api/onboarding/invite`, `POST /api/onboarding/invite/resend` and `/cancel`, `POST /api/onboarding/xero/disconnect` and `/release` | Django (Phase 5D, `hub/onboarding.py`) |
+| `GET /static/img/new_logo.png` | Django (Phase 5C): the invitation email's logo, the same file Flask serves |
 | anything else | Flask, through the fall-through |
 
 ## The fall-through (`core/fallthrough.py`)
@@ -165,7 +169,7 @@ is removed: absence from Xero's answer is ambiguous. A failed page discards the 
 
 Tests: `xero/tests/test_sync.py` (Postgres only).
 
-## The hub and the public routes (Phase 5, 2026-11-06, in progress)
+## The hub and the public routes (Phase 5, 2026-11-06; built and tested locally, not deployed)
 
 Flask's bearer and public routes, moved with their paths, answers (Flask's `jsonify` bytes,
 `core/flask_json.py`) and rules.
@@ -199,13 +203,74 @@ Flask's bearer and public routes, moved with their paths, answers (Flask's `json
   address. An unset inbox or sender is a 500, a failed send a 502, and the throttle is 5 an hour
   per person.
 
+**5C, a company's Users and Entity & Integration tabs** (`hub/company.py`). The company always
+comes from `?entity=`, never the body. Each action checks its own permission, then the rank rule:
+nobody gives a role above their own or manages someone who matches or outranks them.
+- **Users.** The members, the pending invitations, the roles this person may give, and who pays.
+  The payer comes from minty-subscription-api; when it can't answer, the badge is just missing.
+- **Invitations** (`hub/invitations.py`, Flask's invite service).
+  - The address follows the invitations' email rule and both names are needed; the role is one of
+    the four assignable roles.
+  - A current member, or an unexpired pending invitation for the same address, is a 409. An
+    expired one is marked `expired` and replaced.
+  - A resend gets a new token, so the old link dies. It waits 60 s after the last send (429 with
+    `retry_after`; the count is per worker, as in Flask), and a send that fails is a 502.
+  - The email is Flask's HTML, sent from `INVITE_FROM`. Its accept link is
+    `{ACCOUNTS_API_URL}/invitation/accept/<token>?fn=&ln=`, which stays Flask's page until Phase 6.
+    The logo is `/static/img/new_logo.png`, the same file Flask serves, fingerprinted by content.
+  - A failed first send keeps the invitation and answers `email_sent: false`.
+- **A role change or a removal** passes Flask's guards, in Flask's order:
+  - the payer can't be removed, or demoted out of admin;
+  - a company never loses its only admin (deactivated accounts don't count);
+  - nobody being offered the subscription handover can be changed.
+  
+  The payer guards **fail closed**: if minty-subscription-api can't answer, nothing changes (503).
+  The handover guard **fails open**, as Flask documents it. A change that stays at or below admin
+  never asks.
+- **Entity & Integration.**
+  - The name, country and currency, with the active countries and currencies to pick from.
+  - The Xero state, checked live against Xero's `/connections` with the connector's token from this
+    service's own token service. The organisation name is filled in when missing.
+  - A save renames the company (admins only; names are unique per person; 422 sentences), and sets
+    the country and currency. A country sent on its own brings its own currency, and the company's
+    notes and coins follow the currency (`hub/cash_settings.py`, onboarding-api's copy).
+  - A failed save is a 500 and changes nothing.
+  - `?xero_conflict=` names the company holding the organisation; "move it here" is offered only in
+    development.
+
 **Mail and settings:**
 - Mail goes through `SMTP_URL`, which is required outside development.
 - `INVITE_FROM` is required.
 
-**Still to move** (5C–5D): the company's Users and Entity & Integration tabs, the invitation and
-its email, and Xero disconnect and release (the hub's and onboarding's). Also onboarding's
-`/modules`, `/invite` and `/invite/resend`.
+**5D, Xero disconnect and the onboarding routes:**
+- **The one disconnect** (`xero/services/disconnect.py`, Flask's):
+  1. It revokes the company's grant at Xero, as a best effort. The connector's token comes from
+     this service's own token service.
+  2. It clears the connector's tokens when this was their last connected company.
+  3. It drops the company's Xero cache: the account and contact mappings, the organisation's
+     contacts, `account_info` and `entity_bill_account_xero`.
+  4. It marks the company `disconnected`.
+
+  Steps 2-4 are one transaction. A failure is a 502 that says the company may still show as
+  connected.
+- **The hub's Disconnect** answers the fresh Entity & Integration page. Its **release** frees the
+  company holding the organisation. That release is authorized on the company being freed, refused
+  for the company itself, and available in development only.
+- **The onboarding routes** (`hub/onboarding.py`). minty-onboarding-api forwards its caller's token
+  to them, and minty-subscription-api's "invite an admin" forwards to `/invite`. Both reach them
+  through `PETTY_CASH_URL`, so they need no change.
+  - Flask's onboarding door applies: any valid token, 401 `{"error": "Unauthorized"}`, and CORS for
+    the onboarding app with `GET, POST, PUT, OPTIONS`.
+  - The answers use Flask's words.
+  - **Modules:** the chosen modules on and the rest off, recording who chose. Only an **approved**
+    member may choose. Flask took any membership row; this is tightened on purpose.
+  - **Invitations:** list, send, resend and cancel.
+  - **Disconnect:** onboarding's own. The company stays `onboarding`, and its synced lists are kept
+    (owner, 2026-11-06).
+  - **Release:** the shared disconnect of another company, in development only.
+
+Nothing in Phase 5 is left to move. The sign-in codes and their mail, the invitation's accept page
+and every session route are Phase 6.
 
 ## Later phases
 
@@ -233,6 +298,11 @@ application directly. It covers:
   owning its path;
 - the lock, held by a second session as Flask would hold it: a stale token is not refreshed, a
   fresh one is still handed out, and the lock is released afterwards.
+
+`hub/tests/` restates Flask's hub tests for the moved routes (public routes and the door, the
+entity list, My Profile, Terms, Talk to Minty, and the company tabs with their membership guards and
+invitations). minty-subscription-api is faked at `core.subscription_client`; a root fixture blocks
+any real call to it. Mail goes to Django's in-memory outbox.
 
 Checked locally on 2026-11-05: through 8002 to Flask on 8000, the following matched Flask
 directly, headers and body:
