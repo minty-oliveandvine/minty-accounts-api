@@ -133,10 +133,10 @@ def test_health_is_django_and_never_reaches_flask(app, db):
 
 
 def test_any_other_path_goes_to_flask_with_its_query(app):
-    result = call(app, "/api/me/entities", query="page=2&q=a%20b")
+    result = call(app, "/still/flask", query="page=2&q=a%20b")
     assert result["status"].startswith("200")
-    assert FakeFlask.seen[0]["path"] == "/api/me/entities?page=2&q=a%20b"
-    assert json.loads(result["body"]) == {"path": "/api/me/entities?page=2&q=a%20b"}
+    assert FakeFlask.seen[0]["path"] == "/still/flask?page=2&q=a%20b"
+    assert json.loads(result["body"]) == {"path": "/still/flask?page=2&q=a%20b"}
 
 
 def test_flasks_status_comes_back_unchanged(app):
@@ -226,7 +226,7 @@ def test_too_large_a_body_is_refused_without_calling_flask(app):
 
 def test_flask_down_is_a_502_with_the_house_sentence(django_app, caplog):
     down = make_application(django_app, "http://127.0.0.1:9")
-    result = call(down, "/api/me/entities")
+    result = call(down, "/still/flask")
     assert result["status"].startswith("502")
     assert json.loads(result["body"]) == {
         "error": "Something went wrong on our side. Please try again."

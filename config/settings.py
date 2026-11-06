@@ -110,6 +110,9 @@ ACCOUNTS_API_URL = (os.environ.get("ACCOUNTS_API_URL") or os.environ.get("PETTY_
 if not ACCOUNTS_API_URL and not DEVELOPMENT:
     raise ImproperlyConfigured("ACCOUNTS_API_URL is required and is not set")
 
+#: minty-subscription-api, asked for the hub's subscription facts (core/subscription_client.py).
+SUBSCRIPTION_API_URL = _url("SUBSCRIPTION_API_URL", "http://localhost:8001")
+
 # ---- mail ------------------------------------------------------------------------------------
 #: ``SMTP_URL`` (``minty_shared.config``: ``smtp://user:pass@host:587``, ``?tls=0``, ``?timeout=``).
 #: Required outside development - unset is Django's console backend, which only prints, and a

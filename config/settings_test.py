@@ -19,6 +19,7 @@ os.environ["XERO_CLIENT_SECRET"] = "test-client-secret"
 os.environ["INVITE_FROM"] = "Minty <invites@test.minty>"
 os.environ["ACCOUNTS_API_URL"] = "https://accounts-api.test"
 os.environ["SMTP_URL"] = "smtp://mail.test:587"
+os.environ["SUBSCRIPTION_API_URL"] = "http://subscription.invalid"
 for _name in ("PREVIEW_ORIGIN_REGEX", "EXTRA_FRONTEND_ORIGINS", "CONTACT_EMAIL", "CONTACT_FROM"):
     os.environ.pop(_name, None)
 os.environ.setdefault("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")

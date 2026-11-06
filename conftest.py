@@ -10,3 +10,18 @@ matching.
 """
 
 pytest_plugins = ["minty_db.testing.pg", "minty_db.testing.uuid_guard"]
+
+
+import pytest  # noqa: E402
+import requests  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_subscription_api(monkeypatch):
+    """No test reaches a real minty-subscription-api; a test that needs answers patches
+    ``core.subscription_client.requests.request`` itself."""
+
+    def blocked(*args, **kwargs):
+        raise requests.ConnectionError("real HTTP to minty-subscription-api blocked in tests")
+
+    monkeypatch.setattr("core.subscription_client.requests.request", blocked)
