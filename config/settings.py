@@ -134,7 +134,7 @@ if not ACCOUNTS_API_URL and not DEVELOPMENT:
     raise ImproperlyConfigured("ACCOUNTS_API_URL is required and is not set")
 
 #: minty-subscription-api, asked for the hub's subscription facts (core/subscription_client.py).
-SUBSCRIPTION_API_URL = _url("SUBSCRIPTION_API_URL", "http://localhost:8001")
+SUBSCRIPTION_API_URL = _url("SUBSCRIPTION_API_URL", "http://127.0.0.1:8001")
 
 # ---- mail ------------------------------------------------------------------------------------
 #: ``SMTP_URL`` (``minty_shared.config``: ``smtp://user:pass@host:587``, ``?tls=0``, ``?timeout=``).
@@ -157,3 +157,7 @@ LOGGING = logging_config(
     {"": None},
     level=os.environ.get("LOG_LEVEL", "INFO"),
 )
+# runserver's own access line ("GET /landing?token=..." with the whole query) is never written: the
+# request line above already logs every request, path only, secrets redacted. Production runs
+# gunicorn with no access log; this keeps local logs as clean (Phase 6 walk, 2026-11-06).
+LOGGING.setdefault("loggers", {})["django.server"] = {"handlers": [], "propagate": False}
