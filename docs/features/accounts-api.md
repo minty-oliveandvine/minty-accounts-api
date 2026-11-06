@@ -17,6 +17,10 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 | `POST /api/me/company/xero/disconnect`, `POST /api/me/company/xero/release` | Django (Phase 5D, `hub/company.py`, `xero/services/disconnect.py`) |
 | `POST /api/onboarding/modules`, `GET/POST /api/onboarding/invite`, `POST /api/onboarding/invite/resend` and `/cancel`, `POST /api/onboarding/xero/disconnect` and `/release` | Django (Phase 5D, `hub/onboarding.py`) |
 | `GET /static/img/new_logo.png` | Django (Phase 5C): the invitation email's logo, the same file Flask serves |
+| `/`, `/index`, `/register`, `POST /auth/email/request-code`, `/verify-code`, `GET /auth/email/handoff`, `/invitation/accept/<token>` | Django (Phase 6B, `hub/email_signin.py`, `hub/front_door.py`) |
+| `/entity`, `/entity/create`, `/entity/<co>/petty-cash`, `/modules`, `/enter`, `/payment-request`, `/handoff/minty-web`, `/handoff/petty-cash-web`, `/profile`, `POST /logout`, `POST /leave-entity` | Django (Phase 6C, `hub/handoffs.py`) |
+| `/xero_auth`, `/xero_connect`, `/xero_reconnect`, `/callback` | Django (Phase 6D, `hub/xero_oauth.py`, `xero/services/connect.py`) |
+| `/entity/<co>/settings/*`, `/petty-cash/reports`, `/xero-not-connected`, `/Minty_Report/<path>/` and the old addresses (308) | Django (Phase 6E, `hub/redirects.py`) |
 | anything else | Flask, through the fall-through |
 
 ## The fall-through (`core/fallthrough.py`)
@@ -271,6 +275,77 @@ nobody gives a role above their own or manages someone who matches or outranks t
 
 Nothing in Phase 5 is left to move. The sign-in codes and their mail, the invitation's accept page
 and every session route are Phase 6.
+
+## The browser session (Phase 6, 2026-11-06; built locally, not deployed)
+
+Everything that used Flask's session cookie, moved in one release (everyone signs in again once).
+
+- **The session** is Django's (`django.contrib.sessions`, table `django_session`, created by hand
+  with `manage.py migrate sessions` on each database - the schema file's note B6; the Postgres test
+  database gets the same step in the root `conftest.py`). Cookie `session` (Flask's name, so the old
+  cookie is replaced), 24 h, HttpOnly, SameSite=Lax, Secure outside development. There is no
+  `django.contrib.auth`: `hub/session.py` keeps the person's id and the sign-in's id (`login_sid`,
+  the module tokens' `sid`); `sign_in` cycles the key (no fixation) and stamps presence, as
+  Flask-Login's signal did. Flashed messages wait in the session until a redirect signs them into
+  `?flash=` (`hub/notices.sign_notices`, the same itsdangerous format Flask writes).
+- **Headers** (`core/hardening.py`): Flask's `Referrer-Policy`, `nosniff`, `X-Frame-Options`, HSTS
+  outside development; `/invitation/accept/<token>` is `no-store` and logged as `[redacted]`.
+- **Preview sets** (`hub/links.py`): `?return_origin=` and the stored set, Flask's rules;
+  `hub_login_url` builds minty-web's `/login` / `/signup` addresses.
+- **Company addresses** (`hub/addresses.py`): the `<entity:...>` converter (`<shortid>/<name>` or a
+  full uuid); a GET that named a company any other way is 308'd to the canonical address.
+- **The Terms gate** (`hub/terms_gate.py`): a cookie-signed-in person who owes the live Terms is
+  sent to `/entity` (minty-web draws the panel), JSON gets 403 `terms_acceptance_required`; the way
+  in and out and the acceptance flow are open; cached per session per version; fails open, loudly.
+
+**Signing in by code** (`hub/email_signin.py`, Flask's rules): 60 s codes, 60 s resend cooldown,
+5 tries then a 15-minute lock carried across resends, login mode refuses an unknown address, a
+failed send is rolled back. Codes keep werkzeug's `pbkdf2:sha256` format, so a code either side
+issued verifies on the other. Sign-up makes the account and its Terms agreement in one transaction.
+
+**Gaps fixed in the move (owner, 2026-11-06):**
+1. **The hand-off is single use.** Verify-code parks it as a pending `django_session` row
+   (5 minutes); the URL carries its key, signed. `/auth/email/handoff` deletes the row and signs in
+   only if the delete removed it, so a replay, a copied link or a second tab signs nobody in.
+2. **Xero OAuth `state` carries a per-session nonce** (6D, `/xero_auth`, `/xero_connect`,
+   `/xero_reconnect`, `/callback`).
+3. **`/logout` and `/leave-entity` are POST only** (GET is 405), and the POST must come from one of
+   the front ends (`Origin`; the cookie is SameSite=Lax). The apps sign out with a form post.
+4. Tokens still ride in query strings between the apps (`/landing?token=`, `/enter?token=`): a
+   follow-up - a one-time code the Next apps exchange server-side, parked the same way as gap 1.
+
+**Xero OAuth** (6D, `hub/xero_oauth.py`, `xero/services/connect.py`): sign in with Xero, and
+connect or reconnect a company, with Flask's scopes, state shapes, callback branches,
+one-organisation-one-company checks, grant revokes, financial year end and connect-time mirror. The
+post-connect sync reuses `xero/services/sync.py`, on a thread. The callback answers a nonce it did
+not issue before exchanging the code. Two more changes from Flask:
+- **Connecting needs `XERO_SETTINGS_UPDATE` on the company.** Flask checked only `ENTITY_CREATE`
+  (everyone) and wrote the organisation onto whatever company id the state named, overwriting its
+  connection and pruning its accounts. Now `/xero_connect` refuses a named company the person may
+  not connect, and the callback checks the Xero login's owner and revokes the new grant if they
+  fail. Flask's last fallback, "the newest company of anyone", is gone: with nothing named, nothing
+  is connected.
+- A refused code exchange is a sentence, not a 500, and the token write on a connect is in the same
+  transaction as the company's.
+- A company name holding `:` keeps its name and the wrong-login check: the callback reads the
+  initiator from the right of the state (Flask split from the left and skipped the check).
+- A Xero login no Minty account holds is told so, and its grant is handed back at Xero (Flask said
+  nothing and left it live). The onboarding wizard sees `xero=cancelled`, as for other failures.
+- `/callback` is open past the Terms gate. Its start routes stay gated, so only a flow begun while
+  agreed lands, and a Terms change mid-connect no longer throws away what Xero granted.
+
+Like Flask, the id_token's signature is not checked against Xero's keys: the token comes straight
+from Xero's token endpoint over TLS, in exchange for the code and the client secret.
+
+**Hand-offs** (`hub/handoffs.py`): the module token (30 min, `module: "billing"`) and the onboarding
+token (60 min, `scope: "onboarding"`) with Flask's claims exactly; `/enter` turns only a module
+token for a member into a session. **Redirects** (`hub/redirects.py`): the settings tabs, report
+history, share links and the old addresses, with Flask's guards.
+
+**Not moved** (no caller anywhere, checked 2026-11-06): `/check/token`, `/refresh_token`,
+`/minty/api/users/*`, `/api/entities/<id>/payment-methods*`, `/api/xero/bank-transactions/*`,
+`/api/entity/<id>/xero-sync-status`, `/xero-data`, `/entity/<co>/billing-relogin`. They fall
+through until Phase 7 removes the fall-through.
 
 ## Later phases
 

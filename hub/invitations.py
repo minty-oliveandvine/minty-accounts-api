@@ -100,6 +100,62 @@ def create_invitation(entity_id, email: str, role: str, invited_by, first_name: 
     return invitation, None
 
 
+def invite_error_for_email(token: str, verified_email: str) -> str | None:
+    """Why ``token`` can't be used by the person who just proved ``verified_email``, else None (an
+    invitation must name that address: the code went to it)."""
+    token, email = (token or "").strip(), (verified_email or "").strip().lower()
+    if not token:
+        return None
+    invitation = Invitation.objects.filter(token=token, status__in=("pending", "accepted")).first()
+    if invitation is None:
+        return "This invitation is invalid or has already been used."
+    if invitation.email.strip().lower() != email:
+        return "This invite went to a different account — mind signing in as that one?"
+    return None
+
+
+def accept_invitation(token: str, user_id) -> tuple[str | None, str | None]:
+    """``(entity_id, None)`` once ``user_id`` belongs to the company, or ``(None, sentence)``.
+    Idempotent: a re-accept by the same person succeeds. Accepting IS the approval."""
+    invitation = Invitation.objects.filter(token=token, status__in=("pending", "accepted")).first()
+    if invitation is None:
+        logger.info("invitation.accept.invalid user=%s", user_id)
+        return None, "Invitation is invalid or has already been used."
+    if str(invitation.status) == "pending" and _expired(invitation):
+        Invitation.objects.filter(id=invitation.id).update(status="expired")
+        logger.info("invitation.accept.expired invitation=%s user=%s", invitation.id, user_id)
+        return None, "This invitation has expired. Please request a new one."
+    user = User.objects.filter(id=user_id).first()
+    if user is None:
+        return None, "User not found."
+    owned = {(user.email or "").lower(), (user.xero_email or "").lower(), (user.username or "").lower()}
+    if invitation.email.lower() not in owned:
+        logger.warning("invitation.accept.email_mismatch invitation=%s user=%s", invitation.id, user_id)
+        return None, "This invite went to a different account — mind signing in as that one?"
+    if invitation.email.strip().lower() in AUTO_SUPERUSER_EMAILS and (
+            user.system_role != "superadmin" or not user.approved):
+        User.objects.filter(id=user.id).update(system_role="superadmin", approved=True)
+    if str(invitation.status) == "accepted":
+        if UserEntity.objects.filter(user_id=user.id, entity_id=invitation.entity_id).exists():
+            return str(invitation.entity_id), None
+        logger.warning("invitation.accept.conflict invitation=%s user=%s", invitation.id, user_id)
+        return None, "Invitation is invalid or has already been used."
+    if not Entity.objects.filter(id=invitation.entity_id).exists():
+        return None, "The entity no longer exists."
+    now = datetime.now(UTC)
+    with transaction.atomic():
+        updated = UserEntity.objects.filter(user_id=user.id, entity_id=invitation.entity_id).update(
+            role=invitation.role, approved=True, joined_at=now)
+        if not updated:
+            UserEntity.objects.create(user_id=user.id, entity_id=invitation.entity_id, role=invitation.role,
+                                      approved=True, joined_at=now)
+        User.objects.filter(id=user.id).update(approved=True)
+        Invitation.objects.filter(id=invitation.id).update(status="accepted", accepted_at=now)
+    logger.info("invitation.accept.ok invitation=%s entity=%s role=%s user=%s", invitation.id,
+                invitation.entity_id, invitation.role, user_id)
+    return str(invitation.entity_id), None
+
+
 def pending_invitations(entity_id) -> list[Invitation]:
     return list(Invitation.objects.filter(entity_id=entity_id, status="pending").order_by("-created_at"))
 

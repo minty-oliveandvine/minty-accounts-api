@@ -50,7 +50,7 @@ def _client_details(request: HttpRequest) -> tuple[str | None, str | None]:
     return (ip[:45] if ip else None, agent[:512] if agent else None)
 
 
-def record_consent(request: HttpRequest, user_id, version: str) -> bool:
+def record_consent(request: HttpRequest, user_id, version: str, source: str = SOURCE_HUB) -> bool:
     """The person's agreement to ``version`` (already there counts). False when the version has
     no manifest entry or fingerprint."""
     entry = registry.get_version(registry.TERMS, version)
@@ -63,7 +63,7 @@ def record_consent(request: HttpRequest, user_id, version: str) -> bool:
     try:
         with transaction.atomic():
             TermsConsent.objects.create(user_id=user_id, terms_version=version, document_hash=entry.sha256,
-                                        source=SOURCE_HUB, ip_address=ip, user_agent=agent)
+                                        source=source, ip_address=ip, user_agent=agent)
     except IntegrityError:  # two tabs raced: the other one recorded it
         if not TermsConsent.objects.filter(user_id=user_id, terms_version=version).exists():
             raise

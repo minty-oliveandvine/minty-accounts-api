@@ -50,11 +50,34 @@ XERO_API_BASE_URL = (os.environ.get("XERO_API_BASE_URL") or "https://api.xero.co
 
 # minty_db's models are the schema (minty-db, generated from 01_schema_rebased.sql). Its
 # migrations are run by hand (python -m minty_db migrate), never by a service.
-INSTALLED_APPS = ["minty_db", "xero", "hub"]
+# Django's sessions app owns its own table, ``django_session``, created by hand with
+# ``manage.py migrate sessions`` (the schema file's note B6: framework tables stay with the
+# framework; Phase 6, 2026-11-06).
+INSTALLED_APPS = ["django.contrib.sessions", "minty_db", "xero", "hub"]
 MIGRATION_MODULES = {"minty_db": None}
 # Only for the paths Django owns; the fall-through runs in front of all of it (config/wsgi.py).
-MIDDLEWARE = ["minty_shared.django.middleware.RequestLoggingMiddleware"]
+MIDDLEWARE = [
+    "minty_shared.django.middleware.RequestLoggingMiddleware",
+    "core.hardening.HardeningMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "hub.links.PreviewMiddleware",
+    "hub.terms_gate.TermsGateMiddleware",
+]
 MINTY_HTTP_LOGGER = "minty-accounts-api.http"
+#: A secret in a path (an invitation's accept link) never reaches the log line.
+MINTY_LOGGABLE_PATH = "core.hardening.loggable_path"
+
+# ---- the session (Phase 6: Flask's, moved) ---------------------------------------------------
+# Server-side, in ``django_session``; the cookie carries only the key. Flask's cookie name, so the
+# old Flask cookie is replaced rather than left beside it (everyone signs in again once); its
+# lifetime and flags. No CSRF middleware: the JSON calls come cross-origin with no cookie, and the
+# few cookie POSTs (sign out, leave a company) check the Origin themselves (hub/session.py).
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
+SESSION_COOKIE_NAME = "session"
+SESSION_COOKIE_AGE = 24 * 60 * 60
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SECURE = not DEVELOPMENT
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 

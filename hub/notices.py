@@ -3,8 +3,9 @@ redirect drained) and ``?xero_conflict=`` (a blocked Xero connect). Flask's
 ``entity/services/entity_list.py`` ``read_notices`` / ``read_conflict`` (Phase 5 of the Flask
 retirement, 2026-11-06).
 
-Flask's session routes sign them until Phase 6 moves those, so the format is itsdangerous'
-``URLSafeTimedSerializer(SECRET_KEY, salt=...)``, exactly (Django's ``signing`` is another format).
+The format is itsdangerous' ``URLSafeTimedSerializer(SECRET_KEY, salt=...)``, exactly as Flask
+signs them (Django's ``signing`` is another format), so a hand-over minted by either side reads in
+the other while both run. ``sign_notices`` / ``sign_conflict`` are the writing half (Phase 6).
 Never raises: a page draws whatever the URL carries; an expired token is the ordinary case of a
 reload, a bad signature is someone editing the URL and is logged as such.
 """
@@ -22,6 +23,7 @@ NOTICE_SALT = "hub-flash"
 CONFLICT_SALT = "hub-xero-conflict"
 MAX_AGE_SECONDS = 300
 MAX_NOTICES = 5
+MAX_NOTICE_LENGTH = 500
 
 
 def _category(raw: str) -> str:
@@ -41,6 +43,20 @@ def _load(token: str, salt: str, what: str):
     except BadSignature:
         logger.warning("%s: the hand-over's signature did not verify, nothing shown", what)
     return None
+
+
+def sign_notices(messages) -> str | None:
+    """The ``(category, message)`` pairs a redirect drained, signed for the trip to minty-web - or
+    None when there is nothing to tell (Flask's ``sign_notices``, byte-compatible)."""
+    notices = [{"category": _category(category), "message": str(message)[:MAX_NOTICE_LENGTH]}
+               for category, message in messages if str(message).strip()][:MAX_NOTICES]
+    return URLSafeTimedSerializer(settings.SECRET_KEY, salt=NOTICE_SALT).dumps(notices) if notices else None
+
+
+def sign_conflict(entity_id, name: str, can_move: bool) -> str:
+    """The company already holding a Xero organisation, for the refused connect's ``?xero_conflict=``."""
+    return URLSafeTimedSerializer(settings.SECRET_KEY, salt=CONFLICT_SALT).dumps(
+        {"from": str(entity_id), "name": str(name or "")[:MAX_NOTICE_LENGTH], "can_move": bool(can_move)})
 
 
 def read_notices(token: str | None) -> list[dict]:

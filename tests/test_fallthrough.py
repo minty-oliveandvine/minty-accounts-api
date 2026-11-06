@@ -181,7 +181,7 @@ def test_a_compressed_body_passes_through_still_compressed(app):
 
 
 def test_the_body_and_method_are_forwarded(app):
-    result = call(app, "/auth/email/request-code", method="POST", body=b'{"email": "a@b.c"}')
+    result = call(app, "/still/flask/request-code", method="POST", body=b'{"email": "a@b.c"}')
     assert result["status"].startswith("201")
     assert FakeFlask.seen[0]["method"] == "POST"
     assert FakeFlask.seen[0]["body"] == b'{"email": "a@b.c"}'

@@ -25,3 +25,16 @@ def _no_subscription_api(monkeypatch):
         raise requests.ConnectionError("real HTTP to minty-subscription-api blocked in tests")
 
     monkeypatch.setattr("core.subscription_client.requests.request", blocked)
+
+
+if __import__("os").environ.get("MINTY_TEST_PG_URI"):
+
+    @pytest.fixture(scope="session")
+    def django_db_setup(django_db_setup, django_db_blocker):
+        """minty-db's build of the schema file, plus Django's own ``django_session`` - created
+        exactly as on every real database: ``migrate sessions`` (Phase 6)."""
+        from django.core.management import call_command
+
+        with django_db_blocker.unblock():
+            call_command("migrate", "sessions", verbosity=0)
+        yield
