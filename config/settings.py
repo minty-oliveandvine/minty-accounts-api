@@ -42,6 +42,8 @@ FLASK_FALLBACK_URL = _required("FLASK_FALLBACK_URL")
 #: this service is the only caller of Xero's /connect/token for other services (Phase 2).
 XERO_CLIENT_ID = _required("XERO_CLIENT_ID")
 XERO_CLIENT_SECRET = _required("XERO_CLIENT_SECRET")
+#: Xero's accounting API (Flask's ``XERO_API_BASE_URL``; petty-cash-api's default).
+XERO_API_BASE_URL = (os.environ.get("XERO_API_BASE_URL") or "https://api.xero.com/api.xro/2.0").rstrip("/")
 
 # minty_db's models are the schema (minty-db, generated from 01_schema_rebased.sql). Its
 # migrations are run by hand (python -m minty_db migrate), never by a service.

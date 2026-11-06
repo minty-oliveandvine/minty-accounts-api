@@ -18,14 +18,16 @@ import uuid
 
 import jwt
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed
+from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from minty_shared import logctx, tokens
 
+from xero.services.sync import sync_company
 from xero.services.tokens import resolve_entity_access_token
 
 logger = logging.getLogger("minty-accounts-api")
 
 SCOPE = "xero-access-token"
+SYNC_SCOPE = "xero-sync"
 
 
 def flask_json(payload: dict, status: int) -> HttpResponse:
@@ -34,8 +36,9 @@ def flask_json(payload: dict, status: int) -> HttpResponse:
     return HttpResponse(body, status=status, content_type="application/json")
 
 
-def _authenticate(request: HttpRequest) -> tuple[dict | None, str | None]:
-    """``(claims, None)`` for a valid assertion for this route, else ``(None, reason)``."""
+def _authenticate(request: HttpRequest, scope: str = SCOPE) -> tuple[dict | None, str | None]:
+    """``(claims, None)`` for a valid assertion for ``scope`` (each route has its own), else
+    ``(None, reason)``."""
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
         return None, "missing bearer token"
@@ -46,7 +49,7 @@ def _authenticate(request: HttpRequest) -> tuple[dict | None, str | None]:
         return None, "token expired"
     except jwt.InvalidTokenError as exc:
         return None, f"invalid token: {exc}"
-    if claims.get("scope") != SCOPE:
+    if claims.get("scope") != scope:
         return None, "wrong scope"
     # A Minty backend's own assertion: its company (and person, when it names one) go on the
     # log line, with the caller's trace.
@@ -81,3 +84,31 @@ def internal_xero_access_token(request: HttpRequest) -> HttpResponse:
     access_token, xero_org_id = result
     logger.info("internal xero token: issued for entity %s", raw_entity_id)
     return flask_json({"access_token": access_token, "xero_org_id": xero_org_id}, 200)
+
+
+def internal_xero_sync(request: HttpRequest) -> HttpResponse:
+    """``POST /api/internal/xero/sync`` (Phase 3, 2026-11-06): bring the company's Xero accounts and
+    contacts into Minty's tables now (``xero/services/sync.py``) - the one sync, asked for by
+    Petty Cash Settings (and, as their routes move, onboarding and Payment Requests).
+
+    The caller's 60-second assertion is scoped ``xero-sync``; the company is its ``entity_id``. 200
+    ``{"accounts": counts | null, "contacts": counts | null}`` - null when Xero could not be asked
+    for that half (nothing changed); 409 ``{"error", "reconnect": true}`` when there is no usable
+    token; 401 for a bad assertion.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    claims, error = _authenticate(request, SYNC_SCOPE)
+    if error:
+        logger.warning("internal xero sync: rejected caller (%s)", error)
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+    try:
+        entity_id = uuid.UUID(str(claims["entity_id"]))
+    except ValueError:
+        logger.error("internal xero sync: entity_id %r is not a uuid", claims["entity_id"])
+        return JsonResponse({"error": "Xero needs to be connected again.", "reconnect": True}, status=409)
+    token = resolve_entity_access_token(entity_id)
+    if not token:
+        return JsonResponse({"error": "Xero needs to be connected again.", "reconnect": True}, status=409)
+    access_token, xero_org_id = token
+    return JsonResponse(sync_company(entity_id, access_token, xero_org_id))

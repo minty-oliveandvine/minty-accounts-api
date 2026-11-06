@@ -10,6 +10,7 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 |---|---|
 | `/health` | Django: `{"status": "ok", "service": "minty-accounts-api"}`. It never calls Flask |
 | `POST /api/internal/xero/token` | Django (Phase 2): the Xero token service, below |
+| `POST /api/internal/xero/sync` | Django (Phase 3): the one Xero account/contact sync, below |
 | anything else | Flask, through the fall-through |
 
 ## The fall-through (`core/fallthrough.py`)
@@ -116,6 +117,51 @@ HTTPS sent to a dead proxy. Through accounts-api and through Flask, the 401 (no 
 scope) and the 409 (no Xero org) matched Flask's bytes (the local Flask runs in debug mode and
 pretty-prints; production's are compact). A stale token went through the lock, its refresh was
 blocked, and it answered 409 with nothing written.
+
+## The Xero account and contact sync (Phase 3, 2026-11-06)
+
+`POST /api/internal/xero/sync` (`xero/views.py`, `xero/services/sync.py`) brings a company's Xero
+accounts and contacts into Minty's tables. There is one sync, here, for every service (owner's
+choice, 2026-11-06). Petty Cash Settings asks for it now; onboarding and Payment Requests will as
+their Xero routes move (Phase 4).
+
+**Who may ask:** a 60-second assertion scoped `xero-sync`. The company comes from its `entity_id`.
+The token comes in-process from the token service above, refreshed when due.
+
+**Answers:**
+
+| Status | Body |
+|---|---|
+| 200 | `{"accounts": counts or null, "contacts": counts or null}`. Null means Xero couldn't be asked for that half, and nothing changed. |
+| 409 | `{"error", "reconnect": true}`: no usable token. |
+| 401 | A bad assertion. |
+
+It asks Xero for the ACTIVE accounts **once**. Flask asked three times each time the settings opened.
+
+**Accounts:**
+- New ones are added.
+- Returning ones are re-activated.
+- Renamed or recoded ones are refreshed. A type Petty Cash's chart excludes (bank, equity, sales,
+  revenue, other income) keeps its old name, as in Flask.
+- Ones Xero no longer has ACTIVE are deleted, and so is a stale ARCHIVED row. The delete cascades
+  to `entity_account_xero` and clears the Petty Cash mapping that named the account.
+
+**Account lists:**
+- `entity_account_xero` (Petty Cash's codes: direct costs, expense, overheads, prepayment) gains a
+  row per eligible account. The person's ticks are never changed here.
+- `entity_bill_account_xero` (Payment Requests' codes, adding fixed) likewise, and loses rows whose
+  account is gone.
+
+**Contacts** come page by page (1,000 a page). New ones are added and renamed ones updated. Nothing
+is removed: absence from Xero's answer is ambiguous. A failed page discards the whole fetch.
+
+**Safety:**
+- A failed or empty fetch changes nothing.
+- Each half is one transaction under Flask's lock,
+  `pg_advisory_xact_lock(hashtextextended('xero-sync:<entity>', 0))`. So it never overlaps Flask's
+  own syncs (connect, onboarding, the nightly run) while they exist.
+
+Tests: `xero/tests/test_sync.py` (Postgres only).
 
 ## Later phases
 

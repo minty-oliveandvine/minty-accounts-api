@@ -3,7 +3,7 @@
 from django.http import JsonResponse
 from django.urls import path
 
-from xero.views import internal_xero_access_token
+from xero.views import internal_xero_access_token, internal_xero_sync
 
 
 def health(request):
@@ -15,4 +15,6 @@ urlpatterns = [
     path("health", health, name="health"),
     # Phase 2 (2026-11-05): Flask's path, moved. The other backends call it at the same address.
     path("api/internal/xero/token", internal_xero_access_token, name="internal_xero_access_token"),
+    # Phase 3 (2026-11-06): the one Xero account/contact sync, new (Flask's ran in each caller).
+    path("api/internal/xero/sync", internal_xero_sync, name="internal_xero_sync"),
 ]
