@@ -3,7 +3,7 @@
 from django.http import JsonResponse
 from django.urls import path
 
-from hub import entities, public
+from hub import contact, entities, profile, public, terms
 from xero.views import internal_xero_access_token, internal_xero_sync
 
 
@@ -24,4 +24,8 @@ urlpatterns = [
     path("legal/invite-terms-status", public.invite_terms_status, name="invite_terms_status"),
     # Phase 5B: the hub's own routes (bearer, hub CORS).
     path("api/me/entities", entities.my_entities, name="my_entities"),
+    path("api/me/profile", profile.my_profile, name="my_profile"),
+    path("api/me/terms", terms.terms_status, name="terms_status"),
+    path("api/me/terms/accept", terms.terms_accept, name="terms_accept"),
+    path("api/me/contact", contact.my_contact, name="my_contact"),
 ]

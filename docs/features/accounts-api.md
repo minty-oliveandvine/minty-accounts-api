@@ -11,6 +11,8 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 | `/health` | Django: `{"status": "ok", "service": "minty-accounts-api"}`. It never calls Flask |
 | `POST /api/internal/xero/token` | Django (Phase 2): the Xero token service, below |
 | `POST /api/internal/xero/sync` | Django (Phase 3): the one Xero account/contact sync, below |
+| `GET /auth/notices`, `GET /legal/current`, `POST /legal/invite-terms-status` | Django (Phase 5A, `hub/public.py`) |
+| `GET /api/me/entities`, `GET/PATCH /api/me/profile`, `GET /api/me/terms`, `POST /api/me/terms/accept`, `POST /api/me/contact` | Django (Phase 5B, `hub/`) |
 | anything else | Flask, through the fall-through |
 
 ## The fall-through (`core/fallthrough.py`)
@@ -162,6 +164,48 @@ is removed: absence from Xero's answer is ambiguous. A failed page discards the 
   own syncs (connect, onboarding, the nightly run) while they exist.
 
 Tests: `xero/tests/test_sync.py` (Postgres only).
+
+## The hub and the public routes (Phase 5, 2026-11-06, in progress)
+
+Flask's bearer and public routes, moved with their paths, answers (Flask's `jsonify` bytes,
+`core/flask_json.py`) and rules.
+
+**The hub's door** (`hub/transport.py`):
+- Any valid Minty token passes (HS256, 60 s skew, no scope check); the person must exist and be
+  approved, else 401 `{"error": "unauthorized"}`.
+- CORS answers minty-web, the payments app, Petty Cash, their preview sets and
+  `EXTRA_FRONTEND_ORIGINS`. Refusals carry the headers too.
+
+**Shared pieces:**
+- `hub/policy.py`: the other services' permission rules, copied unchanged.
+- `hub/registry.py`: Flask's legal manifest, copied unchanged.
+- `hub/notices.py`: reads the `?flash=` and `?xero_conflict=` hand-overs, which Flask's session
+  routes sign until Phase 6 (itsdangerous 2.2.0).
+
+**5A, the public routes:**
+- The sign-in page's notices.
+- The live Terms and Privacy versions.
+- Whether an invitee still owes a Terms acceptance. This one fails safe to "required".
+
+**5B, the hub's own routes:**
+- **The entity list.** Its trial and payment-failed badges come from minty-subscription-api's
+  read-only facts (`core/subscription_client.py`). When that service can't answer within 2/4 s,
+  the list loads without them.
+- **My Profile.** A changed email moves the username when the username was the email; a taken
+  address is 422.
+- **The Terms gate.** The recorded fingerprint is the manifest's; a mismatch is 409
+  `document_mismatch`; recording is idempotent, `source = hub`.
+- **Talk to Minty.** It mails `CONTACT_EMAIL` from `CONTACT_FROM`, with Reply-To the customer's
+  address. An unset inbox or sender is a 500, a failed send a 502, and the throttle is 5 an hour
+  per person.
+
+**Mail and settings:**
+- Mail goes through `SMTP_URL`, which is required outside development.
+- `INVITE_FROM` is required.
+
+**Still to move** (5C–5D): the company's Users and Entity & Integration tabs, the invitation and
+its email, and Xero disconnect and release (the hub's and onboarding's). Also onboarding's
+`/modules`, `/invite` and `/invite/resend`.
 
 ## Later phases
 

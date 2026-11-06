@@ -168,7 +168,7 @@ def test_one_persons_cookie_is_never_sent_with_the_next_request(app):
 
 
 def test_the_clients_cookie_and_authorization_are_forwarded(app):
-    call(app, "/api/me/profile", headers={"Cookie": "session=mine", "Authorization": "Bearer t"})
+    call(app, "/still/flask/profile", headers={"Cookie": "session=mine", "Authorization": "Bearer t"})
     seen = FakeFlask.seen[0]["headers"]
     assert seen["cookie"] == "session=mine"
     assert seen["authorization"] == "Bearer t"
