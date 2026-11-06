@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 REQUIRED = {
     "SECRET_KEY": "x",
-    "FLASK_FALLBACK_URL": "http://localhost:8000",
     "DATABASE_URL": "postgresql://postgres@localhost:5432/postgres",
     "XERO_CLIENT_ID": "id",
     "XERO_CLIENT_SECRET": "secret",

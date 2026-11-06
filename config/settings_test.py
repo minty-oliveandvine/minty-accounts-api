@@ -13,7 +13,6 @@ import os
 
 # Fixed values, never the developer's .env: no test may reach a real Flask, Xero or database.
 os.environ["SECRET_KEY"] = "test-secret-key-shared-with-flask"
-os.environ["FLASK_FALLBACK_URL"] = "http://127.0.0.1:9"
 os.environ["XERO_CLIENT_ID"] = "test-client-id"
 os.environ["XERO_CLIENT_SECRET"] = "test-client-secret"
 os.environ["INVITE_FROM"] = "Minty <invites@test.minty>"

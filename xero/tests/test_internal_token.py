@@ -20,7 +20,6 @@ from django.test import Client
 from minty_db.enums import EntityStatus
 from minty_db.models import CountryInfo, CurrencyInfo, Entity, User, UserToken
 
-from core.fallthrough import django_owns
 from xero.services import tokens
 
 pytestmark = pytest.mark.skipif(
@@ -214,8 +213,10 @@ def test_only_post(connected):
     assert Client().get(URL).status_code == 405
 
 
-def test_the_path_is_djangos_not_flasks():
-    assert django_owns(URL)
+def test_the_path_is_routed_here():
+    from django.urls import resolve
+
+    assert resolve(URL).url_name == "internal_xero_access_token"
 
 
 # ---- the refresh lock: Flask's key, held by another process ----------------------------------

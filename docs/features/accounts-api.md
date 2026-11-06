@@ -1,10 +1,11 @@
-# The accounts API and its fall-through to Flask
+# The accounts API
 
-## What it does (Phase 1, 2026-11-05)
+## What it does (Phases 1-7, 2026-11-05 to 11-06)
 
 minty-accounts-api stands where Flask stood, at `accounts-api.dailyminty.com` (development:
 `dev-accounts-api.`). Web apps, the other APIs and Xero's callback URL keep calling the same
-address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
+address. Until Phase 7 it fell through to Flask for every path it did not serve; that
+fall-through is gone (2026-11-06), so a path not below is a 404, and Flask is no longer used.
 
 | Path | Answered by |
 |---|---|
@@ -21,53 +22,17 @@ address. Flask runs on behind it, reached only at `FLASK_FALLBACK_URL`.
 | `/entity`, `/entity/create`, `/entity/<co>/petty-cash`, `/modules`, `/enter`, `/payment-request`, `/handoff/minty-web`, `/handoff/petty-cash-web`, `/profile`, `POST /logout`, `POST /leave-entity` | Django (Phase 6C, `hub/handoffs.py`) |
 | `/xero_auth`, `/xero_connect`, `/xero_reconnect`, `/callback` | Django (Phase 6D, `hub/xero_oauth.py`, `xero/services/connect.py`) |
 | `/entity/<co>/settings/*`, `/petty-cash/reports`, `/xero-not-connected`, `/Minty_Report/<path>/` and the old addresses (308) | Django (Phase 6E, `hub/redirects.py`) |
-| anything else | Flask, through the fall-through |
+| anything else | 404 (no fall-through to Flask since Phase 7) |
 
-## The fall-through (`core/fallthrough.py`)
+## The fall-through (removed in Phase 7, 2026-11-06)
 
-It runs at the WSGI level in front of Django (`config/wsgi.py`), so Django's CSRF, session and
-response machinery never touch Flask's traffic.
-
-**Forwarded to Flask:**
-- the method;
-- the path and query exactly as sent (gunicorn's `RAW_URI`);
-- the body (at most 32 MiB; more is a 413 that never reaches Flask);
-- every header except the hop-by-hop ones and `Host`.
-
-It also sets three headers:
-- `X-Forwarded-For` keeps the client's value with this hop's peer appended;
-- `X-Forwarded-Host` and `X-Forwarded-Proto` are kept, or set when absent;
-- `X-Request-ID` keeps a valid incoming trace or starts one (`minty_shared.logctx`).
-
-**Returned:** Flask's status, every header (duplicate `Set-Cookie` included) minus the
-hop-by-hop ones, and the body as raw bytes, streamed. A compressed body stays compressed. A
-redirect comes back as a redirect and is never followed.
-
-**Never:**
-- a retry (a POST reaches Flask once or not at all);
-- a cookie kept between requests;
-- a proxy or credentials read from the environment;
-- an upstream other than `FLASK_FALLBACK_URL`. Only the path is appended, so the service is not
-  an open proxy.
-
-**Flask down:** a 502 with `{"error": "Something went wrong on our side. Please try again."}`,
-logged with the trace. Timeouts are 5 s to connect and 150 s to answer: Petty Cash's Xero
-publish runs through Flask, and petty-cash-api allows 130 s.
-
-It uses urllib3 directly, not requests. A requests `Session` reads a redirect's body even when
-told not to follow it, which left the client waiting for bytes that never came. It also keeps
-`Set-Cookie`s in a jar shared across requests.
-
-## Flask behind it
-
-Flask builds every emailed or handed-off link from `ACCOUNTS_API_URL`, never from the request's
-host:
-- the sign-in hand-off (`_mint_handoff_url`, 2026-11-05);
-- the invitation;
-- the Xero `REDIRECT_URI`.
-
-Behind the fall-through, a request arrives on Flask's internal address, and anyone can call that
-address directly with any `Host`.
+While the phases moved Flask's routes over (2026-11-05 to 11-06), `core/fallthrough.py` sat in
+front of Django at the WSGI level and forwarded every path Django did not route to Flask
+(`FLASK_FALLBACK_URL`), unchanged both ways. Once every path anything calls was here, it was
+removed with its tests and `FLASK_FALLBACK_URL`: on development the Flask service behind it had
+been suspended first and nothing failed, and the routes no caller uses (`/check/token`,
+`/refresh_token`, `/minty/api/users/*`, payment-methods, bank-transactions, `xero-sync-status`,
+`xero-data`, `billing-relogin`) were never ported. Flask's code stays in the Minty repo, unused.
 
 ## The Xero token service (Phase 2, 2026-11-05)
 
@@ -347,23 +312,7 @@ history, share links and the old addresses, with Flask's guards.
 `/api/entity/<id>/xero-sync-status`, `/xero-data`, `/entity/<co>/billing-relogin`. They fall
 through until Phase 7 removes the fall-through.
 
-## Later phases
-
-Each phase moves a group of Flask's routes into `config/urls.py`: a path that resolves in Django
-stops falling through. The order and the boundaries are in the Flask retirement plan; Phase 3
-moves Petty Cash's Xero work into minty-petty-cash-api.
-
 ## Tests
-
-`tests/test_fallthrough.py` runs a local HTTP server in Flask's place and calls the WSGI
-application directly. It covers:
-- routing;
-- status, query, method and body;
-- redirects (body included);
-- both `Set-Cookie`s, and no cookie carried to the next request;
-- gzip passthrough;
-- the forwarded headers, the trace and the hop-by-hop headers;
-- the 413 and the 502.
 
 `tests/test_settings.py` covers the refusal to start without each required value.
 
@@ -378,12 +327,3 @@ application directly. It covers:
 entity list, My Profile, Terms, Talk to Minty, and the company tabs with their membership guards and
 invitations). minty-subscription-api is faked at `core.subscription_client`; a root fixture blocks
 any real call to it. Mail goes to Django's in-memory outbox.
-
-Checked locally on 2026-11-05: through 8002 to Flask on 8000, the following matched Flask
-directly, headers and body:
-- `/auth/notices`, `/legal/current`;
-- `/profile` and `/entity?…` (302 with `Set-Cookie`);
-- `/api/me/entities` (401) and an unknown path (404);
-- a refused `POST /auth/email/request-code` (400).
-
-The OPTIONS preflight differed only by `runserver` adding `Content-Length: 0` to the 204.

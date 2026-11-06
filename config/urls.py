@@ -1,4 +1,4 @@
-"""What Django answers itself. Every other path falls through to Flask (core/fallthrough.py)."""
+"""Every path this service answers; anything else is a 404 (no fall-through to Flask since Phase 7)."""
 
 from django.http import JsonResponse
 from django.urls import path

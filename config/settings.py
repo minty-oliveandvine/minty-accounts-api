@@ -1,9 +1,8 @@
 """minty-accounts-api - Minty's accounts service, on Flask's public address.
 
-The Flask retirement (2026-11-05): Django owns the paths in ``config/urls.py`` (Phase 1
-``/health``, Phase 2 the Xero token service); every other request falls through to Flask
-unchanged (``core/fallthrough.py``, mounted in ``config/wsgi.py``). Each later phase moves another
-group of Flask's routes in.
+The Flask retirement (2026-11-05 to 11-06): every path Minty's sign-in, hub, onboarding, Xero
+and hand-offs need is in ``config/urls.py``. The fall-through to Flask that carried the rest while
+the phases moved over was removed in Phase 7 (2026-11-06); Flask is no longer used.
 """
 
 import os
@@ -37,9 +36,6 @@ SECRET_KEY = _required("SECRET_KEY")
 # Django's debug pages print tracebacks and settings.
 DEBUG = os.environ.get("DJANGO_DEBUG") == "1"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "*").split(",") if h.strip()]
-
-#: Where every request Django does not route goes: Flask's own address (not the public one).
-FLASK_FALLBACK_URL = _required("FLASK_FALLBACK_URL")
 
 #: Xero's OAuth client (the same app Flask signs in with). The token service refreshes with it:
 #: this service is the only caller of Xero's /connect/token for other services (Phase 2).
