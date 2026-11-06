@@ -12,7 +12,6 @@ SECURITY: this hands out live Xero access tokens; nothing but another Minty back
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
@@ -21,6 +20,7 @@ from django.conf import settings
 from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonResponse
 from minty_shared import logctx, tokens
 
+from core.flask_json import flask_json
 from xero.services.sync import sync_company
 from xero.services.tokens import resolve_entity_access_token
 
@@ -28,12 +28,6 @@ logger = logging.getLogger("minty-accounts-api")
 
 SCOPE = "xero-access-token"
 SYNC_SCOPE = "xero-sync"
-
-
-def flask_json(payload: dict, status: int) -> HttpResponse:
-    """The bytes Flask's ``jsonify`` writes for ``payload``."""
-    body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    return HttpResponse(body, status=status, content_type="application/json")
 
 
 def _authenticate(request: HttpRequest, scope: str = SCOPE) -> tuple[dict | None, str | None]:

@@ -3,6 +3,7 @@
 from django.http import JsonResponse
 from django.urls import path
 
+from hub import public
 from xero.views import internal_xero_access_token, internal_xero_sync
 
 
@@ -17,4 +18,8 @@ urlpatterns = [
     path("api/internal/xero/token", internal_xero_access_token, name="internal_xero_access_token"),
     # Phase 3 (2026-11-06): the one Xero account/contact sync, new (Flask's ran in each caller).
     path("api/internal/xero/sync", internal_xero_sync, name="internal_xero_sync"),
+    # Phase 5 (2026-11-06): the public routes, Flask's paths.
+    path("auth/notices", public.auth_notices, name="auth_notices"),
+    path("legal/current", public.legal_current, name="legal_current"),
+    path("legal/invite-terms-status", public.invite_terms_status, name="invite_terms_status"),
 ]

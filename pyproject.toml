@@ -9,7 +9,10 @@ select = ["E", "F", "W", "I", "B", "UP"]
 ignore = [
   # long docstrings and comments are the house style (see the other Django services)
   "E501",
+  # hub/policy.py is a verbatim copy of the other services' policy (str, Enum); StrEnum would be a
+  # behaviour change to review in all of them together (minty-subscription-api ignores it too)
+  "UP042",
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "core", "xero"]
+known-first-party = ["config", "core", "hub", "xero"]

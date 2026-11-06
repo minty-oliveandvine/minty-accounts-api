@@ -16,6 +16,7 @@ REQUIRED = {
     "DATABASE_URL": "postgresql://postgres@localhost:5432/postgres",
     "XERO_CLIENT_ID": "id",
     "XERO_CLIENT_SECRET": "secret",
+    "INVITE_FROM": "Minty <invites@example.test>",
 }
 
 

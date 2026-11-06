@@ -16,10 +16,18 @@ os.environ["SECRET_KEY"] = "test-secret-key-shared-with-flask"
 os.environ["FLASK_FALLBACK_URL"] = "http://127.0.0.1:9"
 os.environ["XERO_CLIENT_ID"] = "test-client-id"
 os.environ["XERO_CLIENT_SECRET"] = "test-client-secret"
+os.environ["INVITE_FROM"] = "Minty <invites@test.minty>"
+os.environ["ACCOUNTS_API_URL"] = "https://accounts-api.test"
+os.environ["SMTP_URL"] = "smtp://mail.test:587"
+for _name in ("PREVIEW_ORIGIN_REGEX", "EXTRA_FRONTEND_ORIGINS", "CONTACT_EMAIL", "CONTACT_FROM"):
+    os.environ.pop(_name, None)
 os.environ.setdefault("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 
 from config.dburl import parse_database_url  # noqa: E402
 from config.settings import *  # noqa: E402,F403
+
+# No test sends real mail: Django's in-memory outbox (mail.outbox).
+EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 _PG_URI = os.environ.get("MINTY_TEST_PG_URI")
 if _PG_URI:

@@ -5,6 +5,9 @@ python-dotenv>=1.0,<2.0
 gunicorn>=23.0,<24.0
 # The fall-through to Flask (core/fallthrough.py; why not requests is written there).
 urllib3>=2.2,<3.0
+# Flask's signed hand-overs (?flash=, ?xero_conflict=) are read until Phase 6 moves their signer:
+# the same library and version Flask pins, so the format is the same (hub/notices.py).
+itsdangerous==2.2.0
 # Xero's /connect/token (xero/services/tokens.py), as Flask calls it; the tests stub
 # requests.post exactly as Flask's do.
 requests>=2.28,<3.0
