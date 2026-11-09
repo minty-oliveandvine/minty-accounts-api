@@ -1,0 +1,58 @@
+# Development overrides — applied automatically on top of docker-compose.yml
+# when you run compose from THIS directory:
+#
+#   cd docker/stack && docker compose up
+#
+# It bind-mounts accounts-api, payment-request-api and subscription-api into their
+# containers and swaps gunicorn for the auto-reloading dev servers, so a saved
+# file is live immediately. The Next.js services already run their dev servers
+# with bind mounts in the base file, so nothing is needed for them here.
+#
+# To run the backends under gunicorn instead (closer to deployed behaviour),
+# skip this file explicitly:
+#
+#   docker compose -f docker-compose.yml up
+#
+# When invoking compose from somewhere else with -f, pass this file too or it
+# will not be applied:
+#
+#   docker compose -f docker/stack/docker-compose.yml \
+#                  -f docker/stack/docker-compose.override.yml up
+services:
+  accounts-api:
+    environment:
+      APP_ENV: development
+    volumes:
+      # Dependencies are installed into site-packages, not /app, so mounting
+      # the repo over /app leaves them intact.
+      - ${ACCOUNTS_API_PATH:-../..}:/app
+      - /app/.venv
+    command:
+      - "python"
+      - "manage.py"
+      - "runserver"
+      - "0.0.0.0:8002"
+
+  payment-request-api:
+    environment:
+      APP_ENV: development
+    volumes:
+      - ${PAYMENT_REQUEST_API_PATH:-../../../minty-payment-request-api}:/app
+      - /app/.venv
+    command:
+      - "python"
+      - "manage.py"
+      - "runserver"
+      - "0.0.0.0:8020"
+
+  subscription-api:
+    environment:
+      APP_ENV: development
+    volumes:
+      - ${SUBSCRIPTION_API_PATH:-../../../minty-subscription-api}:/app
+      - /app/.venv
+    command:
+      - "python"
+      - "manage.py"
+      - "runserver"
+      - "0.0.0.0:8000"

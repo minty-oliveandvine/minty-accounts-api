@@ -312,9 +312,15 @@ history, share links and the old addresses, with Flask's guards.
 `/api/entity/<id>/xero-sync-status`, `/xero-data`, `/entity/<co>/billing-relogin`. They fall
 through until Phase 7 removes the fall-through.
 
+## The whole stack
+
+`docker/stack/`, `scripts/e2e_seed.py` and the stack e2e job moved here from Minty in Phase 7
+(2026-11-06): `stack-e2e.md`.
+
 ## Tests
 
-`tests/test_settings.py` covers the refusal to start without each required value.
+`tests/test_settings.py` covers the refusal to start without each required value;
+`tests/test_e2e_seed.py` the stack's seed.
 
 `xero/tests/test_internal_token.py` (Postgres only) has three groups:
 - Flask's five characterisation tests, ported;

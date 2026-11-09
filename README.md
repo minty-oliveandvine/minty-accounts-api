@@ -45,6 +45,8 @@ That is the SQLite pass; the token service's tests need Postgres (advisory locks
 there. Set `MINTY_TEST_PG_URI` (and a unique `MINTY_TEST_PG_DBNAME`) for the Postgres pass,
 built from minty-db's schema file.
 
-CI is the shared `python-api.yml@v1` (`.github/workflows/ci.yml`). Feature detail:
+CI is the shared `python-api.yml@v1` (`.github/workflows/ci.yml`). The whole-stack e2e job
+(`.github/workflows/e2e.yml`, manual) and the stack it stands up (`docker/stack/`,
+`scripts/e2e_seed.py`) live here too: `docs/features/stack-e2e.md`. Feature detail:
 `docs/features/accounts-api.md`; how a person gets in, system-wide: `docs/features/authentication.md`.
 Every service's variables: minty-infra's `docs/ENVIRONMENT.md`.

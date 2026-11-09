@@ -1,0 +1,414 @@
+# Minty — the whole system, one command.
+#
+# Starts seven repos plus their shared PostgreSQL. Service names are also the
+# hostnames inside the compose network:
+#
+#   db                   PostgreSQL 15                              localhost:5433
+#   accounts-api         Accounts — Django (this repo)              localhost:8002
+#   subscription-api     Subscriptions — Django API                 localhost:8000
+#   minty-web            The hub — Next.js UI                       localhost:3000
+#   payment-request-api  Payment Request — Django API               localhost:8020
+#   payment-request-web  Payment Request — Next.js UI               localhost:3020
+#   onboarding-api       Onboarding — Django API                    localhost:8030
+#   onboarding-web       Onboarding — Next.js UI                    localhost:3030
+#
+# Ports follow one slot per domain: 30N0 for a web app, 80N0 for its API (hub and
+# subscriptions N=0, payment request N=2, onboarding N=3); accounts-api keeps its own
+# local port, 8002. The full service / port / URL / variable reference is
+# Minty/docs/ENVIRONMENT.md.
+#
+# Moved here from Minty/docker/stack on 2026-11-06 (the Flask retirement, Phase 7):
+# minty-accounts-api took Flask's place as the token issuer, so Flask is not in it.
+#
+# The repos are checked out side by side under a common parent (C:\Github\...).
+# Build contexts below reach out of this repo into the siblings; override the
+# *_PATH variables in .env if your layout differs.
+#
+# Run it from THIS directory so docker-compose.override.yml (hot-reload for the
+# Python services) and .env are picked up automatically:
+#
+#   cd docker/stack
+#   cp .env.example .env
+#   docker compose up --build
+#
+# The database starts EMPTY: build the schema first (README.md, "Getting a schema").
+#
+# Requires Docker Compose v2.24+ (for `env_file: required: false`).
+name: minty-stack
+
+# Built once, used by every app service. The schema rides in the URL (?schema=) and is
+# popped off before the driver connects; all services share the one schema.
+x-database-url: &database-url postgresql://${POSTGRES_USER:-minty_ref_user}:${POSTGRES_PASSWORD:-minty_ref_pass}@db:5432/${POSTGRES_DB:-minty_ref}?schema=${DB_SCHEMA:-pettycashv3}
+
+# The one value that MUST be identical across services: accounts-api mints the JWTs,
+# the other Django APIs verify them with this same key. A mismatch is a 401 on every handoff.
+x-secret-key: &secret-key ${SECRET_KEY:-minty_stack_shared_secret_key}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Shared database. Every service lives in the `pettycashv3` schema of this one
+  # database — that sharing is the whole point, so they must never be pointed at
+  # separate databases. POSTGRES_* configure this container only; the apps get
+  # DATABASE_URL above.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: minty-stack-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-minty_ref}
+      POSTGRES_USER: ${POSTGRES_USER:-minty_ref_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-minty_ref_pass}
+    ports:
+      # Published on 5433 so a locally-installed Postgres on 5432 doesn't clash.
+      # The services always reach the db internally on db:5432 regardless.
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-minty_ref_user} -d ${POSTGRES_DB:-minty_ref}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Accounts — Django (this repo). Sign-in, the browser session, the hand-off
+  # tokens, the hub's APIs, the onboarding routes and the Xero token service:
+  # every path Flask used to answer. It migrates nothing on start: the schema is
+  # built by hand first (`python -m minty_db migrate`, then `manage.py migrate
+  # sessions` for `django_session`; README.md "Getting a schema").
+  # ---------------------------------------------------------------------------
+  accounts-api:
+    build:
+      context: ${ACCOUNTS_API_PATH:-../..}
+      dockerfile: Dockerfile
+    container_name: minty-stack-accounts-api
+    restart: unless-stopped
+    env_file:
+      # Layered lowest-first; the `environment:` block below always wins over
+      # both. Your existing per-repo .env supplies XERO_CLIENT_ID/SECRET,
+      # INVITE_FROM and SMTP_URL so you don't have to copy them into the stack .env.
+      - path: ${ACCOUNTS_API_PATH:-../..}/.env
+        required: false
+      - path: ./.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      APP_ENV: ${APP_ENV:-development}
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: *secret-key
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      DATABASE_URL: *database-url
+      # This service's own address. It ends up in the browser's address bar (emailed
+      # links, the Xero callback = ACCOUNTS_API_URL/callback), so localhost, NOT the
+      # container name.
+      ACCOUNTS_API_URL: http://localhost:${ACCOUNTS_API_HOST_PORT:-8002}
+      # The front ends: redirect targets and the hub's CORS origins, so localhost.
+      MINTY_WEB_URL: http://localhost:${MINTY_WEB_HOST_PORT:-3000}
+      PAYMENT_REQUEST_WEB_URL: http://localhost:${PAYMENT_REQUEST_WEB_HOST_PORT:-3020}
+      ONBOARDING_WEB_URL: http://localhost:${ONBOARDING_WEB_HOST_PORT:-3030}
+      # Server-to-server only (the hub's subscription facts): the internal name.
+      SUBSCRIPTION_API_URL: http://subscription-api:8000
+    ports:
+      - "${ACCOUNTS_API_HOST_PORT:-8002}:8002"
+    healthcheck:
+      # /health never touches the database, so healthy means "serving", not "schema
+      # built" - the schema is built before the stack starts.
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    command:
+      - "gunicorn"
+      - "-w"
+      - "${GUNICORN_WORKERS:-4}"
+      - "-b"
+      - "0.0.0.0:8002"
+      - "config.wsgi:application"
+
+  # ---------------------------------------------------------------------------
+  # Payment Request API — Django (minty-payment-request-api). Reads the shared
+  # tables through `search_path=pettycashv3` and asks accounts-api for Xero tokens.
+  # ---------------------------------------------------------------------------
+  payment-request-api:
+    build:
+      context: ${PAYMENT_REQUEST_API_PATH:-../../../minty-payment-request-api}
+      dockerfile: Dockerfile
+    container_name: minty-stack-payment-request-api
+    restart: unless-stopped
+    env_file:
+      - path: ${PAYMENT_REQUEST_API_PATH:-../../../minty-payment-request-api}/.env
+        required: false
+      - path: ./.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      accounts-api:
+        # Its Xero token fetch and chart sync go there.
+        condition: service_healthy
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      PYTHONUNBUFFERED: "1"
+      APP_ENV: ${APP_ENV:-development}
+      # Same key as accounts-api above. A mismatch here means every cross-module
+      # handoff fails with an invalid-signature 401.
+      SECRET_KEY: *secret-key
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      DATABASE_URL: *database-url
+      # Server-to-server only (chart sync, Xero token fetch) — never reaches a
+      # browser, so it uses the internal service name and skips the host network.
+      # accounts-api answers the paths Flask used to.
+      ACCOUNTS_API_URL: http://accounts-api:8002
+      # Browser-facing (redirect target and CORS origins), so localhost. CORS
+      # defaults to these two origins.
+      PAYMENT_REQUEST_WEB_URL: http://localhost:${PAYMENT_REQUEST_WEB_HOST_PORT:-3020}
+      ONBOARDING_WEB_URL: http://localhost:${ONBOARDING_WEB_HOST_PORT:-3030}
+      S3_URL: ${S3_URL:-https://dummy-key:dummy-secret@s3.us-west-004.backblazeb2.com/dummy-bucket}
+      # Off: the schema comes from minty-db (README.md, "Getting a schema").
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-false}
+    ports:
+      - "${PAYMENT_REQUEST_API_HOST_PORT:-8020}:8020"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import socket; socket.create_connection(('127.0.0.1', 8020), timeout=3).close()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    command:
+      - "gunicorn"
+      - "-w"
+      - "${GUNICORN_WORKERS:-4}"
+      - "-b"
+      - "0.0.0.0:8020"
+      - "config.wsgi:application"
+
+  # ---------------------------------------------------------------------------
+  # Payment Request web — Next.js (minty-payment-request-web). Runs the dev server
+  # with the source bind-mounted, so the env below is read when the dev server
+  # starts and editing a file reloads the page.
+  # ---------------------------------------------------------------------------
+  payment-request-web:
+    build:
+      context: ${PAYMENT_REQUEST_WEB_PATH:-../../../minty-payment-request-web}
+      dockerfile: docker/Dockerfile
+    container_name: minty-stack-payment-request-web
+    restart: unless-stopped
+    depends_on:
+      - payment-request-api
+    environment:
+      # Everything below is fetched by the *browser*, so these must be host
+      # URLs. Container names would resolve inside the network but not on your
+      # machine, and every request from the page would fail.
+      ACCOUNTS_API_URL: http://localhost:${ACCOUNTS_API_HOST_PORT:-8002}
+      PAYMENT_REQUEST_API_URL: http://localhost:${PAYMENT_REQUEST_API_HOST_PORT:-8020}
+      SUBSCRIPTION_API_URL: http://localhost:${SUBSCRIPTION_API_HOST_PORT:-8000}
+      NODE_ENV: development
+      # Bind mounts on Windows/macOS don't deliver inotify events reliably.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${PAYMENT_REQUEST_WEB_HOST_PORT:-3020}:3020"
+    volumes:
+      - ${PAYMENT_REQUEST_WEB_PATH:-../../../minty-payment-request-web}:/app
+      # Anonymous volumes keep the image's own node_modules / build cache
+      # instead of letting the host's shadow them.
+      - /app/node_modules
+      - /app/.next
+
+  # ---------------------------------------------------------------------------
+  # Onboarding API — the wizard's backend. Django + django-ninja against the SAME
+  # pettycashv3 schema, with minty-db's models and no migrations of its own.
+  #
+  # Some of its endpoints are proxies to accounts-api (the onboarding routes, Xero
+  # tokens) and to subscription-api (cards, consent, the trial start), which is why
+  # it needs ACCOUNTS_API_URL even though it shares the database.
+  # ---------------------------------------------------------------------------
+  onboarding-api:
+    build:
+      context: ${ONBOARDING_API_PATH:-../../../minty-onboarding-api}
+      dockerfile: Dockerfile
+    container_name: minty-stack-onboarding-api
+    restart: unless-stopped
+    env_file:
+      - path: ${ONBOARDING_API_PATH:-../../../minty-onboarding-api}/.env
+        required: false
+      - path: ./.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      accounts-api:
+        # The proxied onboarding routes and the Xero token fetch go there.
+        condition: service_healthy
+      subscription-api:
+        # Cards, billing consent and finalize's trial start are proxied there.
+        condition: service_healthy
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      PYTHONUNBUFFERED: "1"
+      APP_ENV: ${APP_ENV:-development}
+      # Same key as accounts-api and payment-request-api. accounts-api MINTS the
+      # onboarding JWT and this service only verifies it, so a mismatch is not a boot
+      # failure — it is a 401 on every request, which the wizard reports as an
+      # expired session.
+      SECRET_KEY: *secret-key
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      DATABASE_URL: *database-url
+      # Server-to-server: the proxied endpoints and the Xero token fetch. Internal
+      # service name, so it never leaves the compose network.
+      ACCOUNTS_API_URL: http://accounts-api:8002
+      # Server-to-server: cards, billing consent and finalize's trial start.
+      SUBSCRIPTION_API_URL: http://subscription-api:8000
+      # Only the wizard calls this API from a browser, so CORS defaults to its origin.
+      ONBOARDING_WEB_URL: http://localhost:${ONBOARDING_WEB_HOST_PORT:-3030}
+      # Hong Kong, so the wizard's date picker caps on the same "today" as the
+      # seeded HK companies.
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Asia/Hong_Kong}
+    ports:
+      - "${ONBOARDING_API_HOST_PORT:-8030}:8030"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import socket; socket.create_connection(('127.0.0.1', 8030), timeout=3).close()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    command:
+      - "gunicorn"
+      - "-w"
+      - "${GUNICORN_WORKERS:-4}"
+      - "-b"
+      - "0.0.0.0:8030"
+      - "config.wsgi:application"
+
+  # ---------------------------------------------------------------------------
+  # Onboarding web — Next.js (minty-onboarding-web). Talks to accounts-api and to
+  # the onboarding API, both from the browser.
+  # ---------------------------------------------------------------------------
+  onboarding-web:
+    build:
+      context: ${ONBOARDING_WEB_PATH:-../../../minty-onboarding-web}
+      dockerfile: docker/Dockerfile
+    container_name: minty-stack-onboarding-web
+    restart: unless-stopped
+    depends_on:
+      - accounts-api
+      - onboarding-api
+    environment:
+      # Browser-facing → localhost, not the internal service names. Which paths go
+      # to the onboarding API vs to accounts-api is decided in the wizard's lib/apiRoutes.js.
+      ACCOUNTS_API_URL: http://localhost:${ACCOUNTS_API_HOST_PORT:-8002}
+      ONBOARDING_API_URL: http://localhost:${ONBOARDING_API_HOST_PORT:-8030}
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${ONBOARDING_WEB_HOST_PORT:-3030}:3030"
+    volumes:
+      - ${ONBOARDING_WEB_PATH:-../../../minty-onboarding-web}:/app
+      - /app/node_modules
+      - /app/.next
+
+  # ---------------------------------------------------------------------------
+  # Subscription API — Django (minty-subscription-api). Django + django-ninja on
+  # Python 3.13 against the SAME schema, no migrations of its own. The single
+  # Stripe writer; verifies accounts-api's token, never mints one. Its in-process
+  # scheduler runs only with SUBSCRIPTION_SCHEDULER_ENABLED=1.
+  # ---------------------------------------------------------------------------
+  subscription-api:
+    build:
+      context: ${SUBSCRIPTION_API_PATH:-../../../minty-subscription-api}
+      dockerfile: Dockerfile
+    container_name: minty-stack-subscription-api
+    restart: unless-stopped
+    env_file:
+      # Stripe keys, SMTP_URL and the senders (SUBSCRIPTION_FROM, ONBOARDING_FROM) come from the repo's .env or this one.
+      - path: ${SUBSCRIPTION_API_PATH:-../../../minty-subscription-api}/.env
+        required: false
+      - path: ./.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+      accounts-api:
+        # Its one forwarded call (invite-admin) goes there.
+        condition: service_healthy
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      PYTHONUNBUFFERED: "1"
+      APP_ENV: ${APP_ENV:-development}
+      # Same key as accounts-api: accounts-api mints the module JWT, this service only verifies it.
+      SECRET_KEY: *secret-key
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      DATABASE_URL: *database-url
+      # The daily pass: leave it off locally - pointed at real payers it starts charging them.
+      SUBSCRIPTION_SCHEDULER_ENABLED: ${SUBSCRIPTION_SCHEDULER_ENABLED:-0}
+      # Server-to-server: the one forwarded call (invite-admin). Internal name.
+      ACCOUNTS_API_URL: http://accounts-api:8002
+      # The address a PERSON reaches accounts-api at - every link in a subscription email
+      # goes through its re-handoff there. Never the internal name above.
+      ACCOUNTS_API_PUBLIC_URL: http://localhost:${ACCOUNTS_API_HOST_PORT:-8002}
+      # Browser origins that call this API: minty-web and the payment-request UI (the
+      # notice). CORS defaults to these plus ACCOUNTS_API_PUBLIC_URL.
+      MINTY_WEB_URL: http://localhost:${MINTY_WEB_HOST_PORT:-3000}
+      PAYMENT_REQUEST_WEB_URL: http://localhost:${PAYMENT_REQUEST_WEB_HOST_PORT:-3020}
+    ports:
+      - "${SUBSCRIPTION_API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    command:
+      # Two workers, two in-process schedulers: the pass's advisory lock lets one run.
+      - "gunicorn"
+      - "-w"
+      - "2"
+      - "-b"
+      - "0.0.0.0:8000"
+      - "config.wsgi:application"
+
+  # ---------------------------------------------------------------------------
+  # The hub — minty-web. Next.js on 3000. Talks to subscription-api and
+  # accounts-api from the browser, and to accounts-api's session routes through
+  # redirects.
+  # ---------------------------------------------------------------------------
+  minty-web:
+    build:
+      context: ${MINTY_WEB_PATH:-../../../minty-web}
+      dockerfile: docker/Dockerfile
+    container_name: minty-stack-minty-web
+    restart: unless-stopped
+    depends_on:
+      - accounts-api
+      - subscription-api
+    environment:
+      # Everything below is fetched by the *browser* or used in a redirect, so host URLs.
+      ACCOUNTS_API_URL: http://localhost:${ACCOUNTS_API_HOST_PORT:-8002}
+      SUBSCRIPTION_API_URL: http://localhost:${SUBSCRIPTION_API_HOST_PORT:-8000}
+      PAYMENT_REQUEST_WEB_URL: http://localhost:${PAYMENT_REQUEST_WEB_HOST_PORT:-3020}
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${MINTY_WEB_HOST_PORT:-3000}:3000"
+    volumes:
+      - ${MINTY_WEB_PATH:-../../../minty-web}:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:

@@ -1,0 +1,37 @@
+# The whole stack, then one repo's browser specs against it. The workflow body is shared:
+# minty-oliveandvine/.github -> .github/workflows/stack-e2e.yml
+#
+# It lives here because this repo owns the moving parts the job needs (docker/stack, the
+# token issuer and scripts/e2e_seed.py; moved from Minty 2026-11-06). The schema comes from
+# minty-db, installed in this repo's image. No secret is passed: every checkout is public.
+#
+# Manual only: it builds seven images and runs browser specs serially. Measure a run before
+# putting it on a schedule. Use "Run workflow" any time.
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Whose specs to run"
+        type: choice
+        default: minty-web
+        options:
+          - minty-web
+          - minty-payment-request-web
+      ref:
+        description: "The branch of the other six repos"
+        type: string
+        default: development
+      spec:
+        description: "Optional Playwright filter, e.g. e2e/09_terms.spec.ts"
+        type: string
+        default: ""
+
+jobs:
+  stack:
+    uses: minty-oliveandvine/.github/.github/workflows/stack-e2e.yml@v1
+    with:
+      suite: ${{ inputs.suite }}
+      ref: ${{ inputs.ref }}
+      spec: ${{ inputs.spec }}
