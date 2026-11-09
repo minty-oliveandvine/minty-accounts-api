@@ -31,9 +31,6 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 from django.conf import settings
-from django.contrib.sessions.backends.db import SessionStore
-from django.contrib.sessions.models import Session
-from django.core import signing
 from django.core.mail import EmailMessage
 from django.db import transaction
 from django.db.models import Q
@@ -42,7 +39,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, HttpR
 from minty_db.models import EmailOtp, User
 
 from core.flask_json import flask_json
-from hub import invitations, registry
+from hub import invitations, parked, registry
 from hub.public import _open_cors
 from hub.rules import EMAIL_ASCII_MESSAGE, is_ascii_email
 from hub.session import flash, safe_internal_path, sign_in
@@ -56,7 +53,6 @@ RESEND_COOLDOWN_SECONDS = 60
 LOCKOUT_MINUTES = 15
 HANDOFF_SALT = "auth-email-handoff"
 HANDOFF_MAX_AGE = 5 * 60
-PENDING_KEY = "pending_handoff"
 SOURCE_SIGNUP_OTP = "signup_otp"
 SOURCE_SIGNUP_INVITE = "signup_invite"
 PBKDF2_ITERATIONS = 600_000
@@ -202,31 +198,16 @@ def _code_email_html(code: str) -> str:
 
 
 def mint_handoff_url(request: HttpRequest, user_id, invite: str = "", next_path: str = "") -> str:
-    pending = SessionStore()
-    pending[PENDING_KEY] = {"user_id": str(user_id), "invite": invite, "next": next_path}
-    pending.set_expiry(HANDOFF_MAX_AGE)
-    pending.create()
-    query = urlencode({"h": signing.dumps(pending.session_key, salt=HANDOFF_SALT)})
+    key = parked.park({"user_id": str(user_id), "invite": invite, "next": next_path},
+                      salt=HANDOFF_SALT, max_age=HANDOFF_MAX_AGE)
+    query = urlencode({"h": key})
     base = settings.ACCOUNTS_API_URL or request.build_absolute_uri("/").rstrip("/")
     return f"{base}/auth/email/handoff?{query}"
 
 
 def redeem_handoff(token: str) -> dict | None:
     """The parked hand-off, once: None for a missing, forged, expired or already used token."""
-    try:
-        key = signing.loads(token, salt=HANDOFF_SALT, max_age=HANDOFF_MAX_AGE)
-    except signing.SignatureExpired:
-        logger.warning("Handoff: token expired (older than %ss)", HANDOFF_MAX_AGE)
-        return None
-    except signing.BadSignature:
-        logger.warning("Handoff: bad token signature")
-        return None
-    data = SessionStore(session_key=str(key)).load().get(PENDING_KEY)
-    deleted, _ = Session.objects.filter(session_key=str(key)).delete()
-    if not data or not deleted:
-        logger.warning("Handoff: the hand-off was already used or has lapsed")
-        return None
-    return data
+    return parked.redeem(token, salt=HANDOFF_SALT, max_age=HANDOFF_MAX_AGE, what="Handoff")
 
 
 # ---- routes -------------------------------------------------------------------------------------

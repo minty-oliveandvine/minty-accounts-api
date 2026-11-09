@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -64,14 +65,24 @@ def iri(path):
 
 
 def landing(resp, origin):
+    """The app's ``/landing`` query - with a one-time code, never a token (gap 4)."""
     assert resp.status_code == 302, resp.content
     parts = urlsplit(resp["Location"])
     assert f"{parts.scheme}://{parts.netloc}{parts.path}" == origin + "/landing", resp["Location"]
-    return parse_qs(parts.query)
+    query = parse_qs(parts.query)
+    assert "token" not in query and query["code"], resp["Location"]
+    return {**query, "_origin": [origin]}
+
+
+def swap(code, origin):
+    """What the app's landing does: the code, swapped once, from the app's origin."""
+    resp = redeem(code, origin)
+    assert resp.status_code == 200, resp.content
+    return resp.json()["token"]
 
 
 def claims(query):
-    return jwt.decode(query["token"][0], settings.SECRET_KEY, algorithms=["HS256"])
+    return jwt.decode(swap(query["code"][0], query["_origin"][0]), settings.SECRET_KEY, algorithms=["HS256"])
 
 
 # ---- tokens -------------------------------------------------------------------------------------
@@ -137,7 +148,8 @@ def test_petty_cash_switched_off_gets_no_token_and_onboarding_goes_to_the_wizard
     wizard = urlsplit(client.get("/handoff/petty-cash-web", {"entity_id": str(shop["entity"].id)})["Location"])
     assert f"{wizard.scheme}://{wizard.netloc}" == ONB
     query = parse_qs(wizard.query)
-    assert jwt.decode(query["token"][0], settings.SECRET_KEY, algorithms=["HS256"])["scope"] == "onboarding"
+    assert "token" not in query
+    assert jwt.decode(swap(query["code"][0], ONB), settings.SECRET_KEY, algorithms=["HS256"])["scope"] == "onboarding"
     assert query["entity_id"] == [str(shop["entity"].id)]
 
 
@@ -220,35 +232,98 @@ def test_the_dashboard_hands_over_to_the_apps_petty_cash(shop):
     assert parse_qs(target.query) == {"entity_id": [str(shop["entity"].id)], "next": [f"{path}/petty-cash"]}
 
 
-# ---- back in: /enter ----------------------------------------------------------------------------
+# ---- back in: /enter (on the session alone, gap 4) ----------------------------------------------
 
 
-def enter(shop, token, nxt=None, client=None):
-    query = {"token": token, **({"next": nxt} if nxt else {})}
+def enter(shop, nxt=None, client=None, **extra):
+    query = {**({"next": nxt} if nxt else {}), **extra}
     return (client or Client()).get(f"/entity/{str(shop['entity'].id)[:8]}/vine-café-central/enter", query)
 
 
-def test_a_module_token_for_a_member_becomes_a_session(shop):
-    token = handoffs.module_token(None, shop["owner"].id, shop["entity"].id, "")
-    client = Client()
-    resp = enter(shop, token, "/entity", client)
-    assert resp["Location"] == "/entity" and resp.cookies["session"].value
-    assert client.get("/")["Location"] == "/entity"
+def test_back_with_the_session_goes_straight_on(shop):
+    assert enter(shop, "/entity", login(Client(), shop["owner"]))["Location"] == "/entity"
 
 
 @pytest.mark.parametrize("evil", ["/%09/evil.com", "/%5Cevil.com", "//evil.com", "https://evil.com"])
 def test_enter_never_redirects_off_site(shop, evil):
-    token = handoffs.module_token(None, shop["owner"].id, shop["entity"].id, "")
-    resp = Client().get(f"/entity/{ref(shop['entity'])}/enter?token={token}&next={evil}")  # raw, as a browser sends it
+    client = login(Client(), shop["owner"])
+    resp = client.get(f"/entity/{ref(shop['entity'])}/enter?next={evil}")  # raw, as a browser sends it
     assert resp["Location"].endswith(iri("/vine-café-central/petty-cash")) and "evil" not in resp["Location"]
 
 
-def test_an_onboarding_token_a_strangers_or_a_forged_one_is_refused(shop):
-    for token in (handoffs.onboarding_token(shop["owner"].id),
-                  handoffs.module_token(None, shop["stranger"].id, shop["entity"].id, ""), "forged", ""):
-        client = Client()
-        assert enter(shop, token, client=client)["Location"] == "/"
-        assert client.get("/")["Location"].startswith(HUB + "/login")  # nobody signed in
+def test_a_token_in_the_address_signs_nobody_in(shop):
+    """Gap 4: ``/enter?token=`` once made a session from any module token for 30 minutes."""
+    token = handoffs.module_token(None, shop["owner"].id, shop["entity"].id, "")
+    client = Client()
+    resp = enter(shop, "/entity", client, token=token)
+    assert resp["Location"].startswith("/?next=")  # the front door, not the company
+    assert client.get("/")["Location"].startswith(HUB + "/login")  # nobody signed in
+
+
+def test_back_with_no_session_signs_in_then_carries_on_there(shop):
+    path = f"/entity/{ref(shop['entity'])}/enter"
+    resp = Client().get(path, {"next": "/entity"})
+    target = urlsplit(resp["Location"])
+    assert resp.status_code == 302 and target.path == "/"
+    assert parse_qs(target.query)["next"] == [iri(path) + "?next=%2Fentity"]
+
+
+# ---- one-time codes: POST /api/handoff/redeem (gap 4) -------------------------------------------
+
+
+def redeem(code, origin=PAY, client=None):
+    headers = {"HTTP_ORIGIN": origin} if origin else {}
+    return (client or Client()).post("/api/handoff/redeem", data=json.dumps({"code": code}),
+                                     content_type="application/json", **headers)
+
+
+def test_a_code_gives_its_token_once_to_the_app_it_was_handed_to(db):
+    code = handoffs.park_token("the.module.jwt", PAY + "/")
+    first = redeem(code)
+    assert first.status_code == 200 and first.json() == {"token": "the.module.jwt"}
+    assert first["Access-Control-Allow-Origin"] == PAY and first["Cache-Control"] == "no-store"
+    again = redeem(code)
+    assert again.status_code == 400 and again.json() == {"error": handoffs.CODE_REFUSED}
+
+
+def test_a_code_from_another_origin_is_refused_and_spent(db):
+    code = handoffs.park_token("the.module.jwt", PAY)
+    for origin in (HUB, "https://evil.example", ""):
+        assert redeem(handoffs.park_token("t", PAY), origin).status_code == 403
+    assert redeem(code, HUB).json() == {"error": handoffs.CODE_REFUSED}
+    assert redeem(code).status_code == 400  # the wrong hands spent it
+
+
+def test_the_onboarding_app_redeems_its_own_code(db):
+    resp = redeem(handoffs.park_token("onboarding.jwt", ONB), ONB)
+    assert resp.status_code == 200 and resp["Access-Control-Allow-Origin"] == ONB
+
+
+def test_an_expired_forged_or_malformed_code_is_refused(db, monkeypatch):
+    stale = handoffs.park_token("t", PAY)
+    monkeypatch.setattr(handoffs, "CODE_MAX_AGE", -1)
+    assert redeem(stale).status_code == 400
+    monkeypatch.undo()
+    for code in ("", "forged", "x" * 600, 42, None):
+        resp = redeem(code)
+        assert resp.status_code == 400 and resp.json() == {"error": handoffs.CODE_REFUSED}
+    bad = Client().post("/api/handoff/redeem", data="not json", content_type="application/json", HTTP_ORIGIN=PAY)
+    assert bad.status_code == 400
+
+
+def test_redeem_is_a_post_with_a_preflight(db):
+    pre = Client().options("/api/handoff/redeem", HTTP_ORIGIN=PETTY)
+    assert pre.status_code == 204 and pre["Access-Control-Allow-Origin"] == PETTY
+    assert pre["Access-Control-Allow-Methods"] == "POST, OPTIONS" and "Content-Type" in pre["Access-Control-Allow-Headers"]
+    assert Client().get("/api/handoff/redeem").status_code == 405
+
+
+def test_neither_code_nor_token_is_ever_logged(db, caplog):
+    code = handoffs.park_token("the.module.jwt", PAY)
+    redeem(code, HUB)
+    redeem(code)
+    logged = " | ".join(r.getMessage() for r in caplog.records)
+    assert code not in logged and "the.module.jwt" not in logged
 
 
 # ---- out: POST only (gap 3) ---------------------------------------------------------------------

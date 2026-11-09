@@ -4,7 +4,12 @@ retirement, 2026-11-06).
 
 **Tokens** (HS256 over ``SECRET_KEY``, Flask's claims exactly): the module token (30 min,
 ``module: "billing"``) every app's ``/landing`` keeps, and the onboarding token (60 min,
-``scope: "onboarding"``). Their URLs carry the token, so they are never logged.
+``scope: "onboarding"``).
+
+**No token in an address (gap 4, 2026-11-09):** an app is handed a one-time ``code`` - the token
+parked for 2 minutes (``hub/parked.py``, like the code sign-in's hand-off) - which its landing
+swaps once, from its own origin, at ``POST /api/handoff/redeem``. The way back, ``/enter``, works on
+the session alone.
 
 **Routes** (signed in, else the front door with ``next``):
 - ``/entity``: minty-web's company list with an unscoped token, carrying what was flashed.
@@ -12,7 +17,8 @@ retirement, 2026-11-06).
 - ``/entity/<co>/modules``: mid-onboarding to the wizard; one module to that app; both to
   minty-web's module choice. ``/entity/<co>/petty-cash`` and ``/payment-request`` straight in.
 - ``/handoff/minty-web``, ``/handoff/petty-cash-web``, ``/profile``: a fresh token at the click.
-- ``/entity/<co>/enter?token=``: a module token (only) for a member of ``<co>`` becomes a session.
+- ``/entity/<co>/enter?next=``: back from an app, on the session; without one, the front door,
+  then back here.
 - ``POST /logout`` ends the session; ``POST /leave-entity`` leaves the company (presence) and keeps
   it. **POST only (gap 3, 2026-11-06):** a GET is 405, and a POST must come from one of the front
   ends (``Origin``; SameSite=Lax already keeps other sites' POSTs from carrying the cookie).
@@ -20,6 +26,7 @@ retirement, 2026-11-06).
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -30,6 +37,8 @@ from django.conf import settings
 from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, HttpResponseRedirect
 from minty_db.models import Entity, EntityFunction, EntityFunctionMap, User, UserEntity
 
+from core.flask_json import flask_json
+from hub import parked
 from hub.addresses import canonical_redirect, canonical_ref, company_path, resolve
 from hub.front_door import signed_in_or_door
 from hub.links import handoff_origin, parse
@@ -49,9 +58,9 @@ from hub.session import (
     login_sid,
     resume_presence,
     safe_next,
-    sign_in,
     sign_out,
 )
+from hub.transport import cors_origin
 
 logger = logging.getLogger("minty-accounts-api")
 
@@ -64,6 +73,10 @@ MINTY_WEB_ENTITIES_PATH = "/entities"
 REQUEST_REFERENCE_MAX = 255
 NO_PERMISSION = "Hmm, it looks like you don't have permission to look there."
 NOT_FOUND = "Hmm, I looked everywhere but couldn't find that one."
+HANDOFF_CODE_SALT = "handoff-code"
+CODE_MAX_AGE = 2 * 60
+CODE_MAX_LENGTH = 512
+CODE_REFUSED = "This sign-in link has already been used or has run out. Open it again from Minty to continue."
 
 
 # ---- tokens -------------------------------------------------------------------------------------
@@ -111,12 +124,58 @@ def _role(user: User, entity_id) -> str:
     return Role.SUPER_ADMIN.value if is_superuser(user) else ""
 
 
+# ---- one-time codes (gap 4) ---------------------------------------------------------------------
+
+
+def park_token(token: str, origin: str) -> str:
+    """A one-time code for ``token``, redeemable once, for 2 minutes, from ``origin`` only."""
+    return parked.park({"token": token, "origin": origin.rstrip("/")}, salt=HANDOFF_CODE_SALT,
+                       max_age=CODE_MAX_AGE)
+
+
+def _redeem_cors(request: HttpRequest, response: HttpResponse) -> HttpResponse:
+    configured = (settings.MINTY_WEB_URL, settings.PAYMENT_REQUEST_WEB_URL, settings.PETTY_CASH_WEB_URL,
+                  settings.ONBOARDING_WEB_URL)
+    response["Access-Control-Allow-Origin"] = cors_origin(request, configured, settings.FRONTEND_APPS)
+    response["Vary"] = "Origin"
+    response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response["Access-Control-Allow-Headers"] = "Content-Type"
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def redeem_code(request: HttpRequest) -> HttpResponse:
+    """``POST /api/handoff/redeem`` ``{"code"}``: the parked token, once, to the origin it was
+    handed to - ``{"token"}``. Used, lapsed or forged: 400; another origin: 403 (and the code is
+    spent - it was in the wrong hands). The same sentence either way."""
+    if request.method == "OPTIONS":
+        return _redeem_cors(request, HttpResponse(status=204))
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST", "OPTIONS"])
+    try:
+        body = json.loads(request.body or b"{}")
+    except ValueError:
+        body = None
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str) or not code or len(code) > CODE_MAX_LENGTH:
+        return _redeem_cors(request, flask_json({"error": CODE_REFUSED}, 400))
+    data = parked.redeem(code, salt=HANDOFF_CODE_SALT, max_age=CODE_MAX_AGE, what="Hand-off code")
+    if data is None:
+        return _redeem_cors(request, flask_json({"error": CODE_REFUSED}, 400))
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin != data.get("origin"):
+        logger.warning("Hand-off code refused: redeemed from %r, handed to %r", origin, data.get("origin"))
+        return _redeem_cors(request, flask_json({"error": CODE_REFUSED}, 403))
+    return _redeem_cors(request, flask_json({"token": data["token"]}))
+
+
 # ---- where each app is entered ------------------------------------------------------------------
 
 
 def _landing(origin: str, next_path: str, entity_id, entity_name: str, token: str) -> str:
+    """The app's ``/landing`` with a one-time code for ``token`` - never the token itself."""
     return (f"{origin}/landing?next={quote(next_path, safe='')}&entity_id={entity_id}"
-            f"&entity_name={quote(entity_name, safe='')}&token={token}")
+            f"&entity_name={quote(entity_name, safe='')}&code={quote(park_token(token, origin), safe='')}")
 
 
 def minty_web_company_path(entity_id, sub: str = "") -> str:
@@ -149,11 +208,12 @@ def payment_request_landing_url(request: HttpRequest, org: Entity, user: User, p
 
 def onboarding_launch_url(request: HttpRequest, user: User, *, entity_name: str = "", entity_id: str = "",
                           fresh: bool = False) -> str:
-    params = {"token": onboarding_token(user.id), "first": (user.first_name or "").strip(),
+    origin = handoff_origin(request, "onboarding", settings.ONBOARDING_WEB_URL)
+    params = {"code": park_token(onboarding_token(user.id), origin), "first": (user.first_name or "").strip(),
               "last": (user.last_name or "").strip(), "entity_name": entity_name, "entity_id": str(entity_id or ""),
               "fresh": "1" if fresh and not entity_id else ""}
     query = urlencode({k: v for k, v in params.items() if v})
-    return f"{handoff_origin(request, 'onboarding', settings.ONBOARDING_WEB_URL)}/?{query}"
+    return f"{origin}/?{query}"
 
 
 def _to_list(request: HttpRequest, message: str | None = None, category: str = "danger") -> HttpResponse:
@@ -332,53 +392,18 @@ def open_profile(request: HttpRequest) -> HttpResponse:
 
 
 def module_reenter(request: HttpRequest, entity_id) -> HttpResponse:
-    """``/entity/<co>/enter?token=&next=``: back from an app. A module token for a member of the
-    company becomes a session; ``next`` is a path on this site, else the company's Petty Cash."""
+    """``/entity/<co>/enter?next=``: back from an app. With the session, on to ``next`` (a path on
+    this site, else the company's Petty Cash); without one, the front door, then back here. No
+    token is read from the address (gap 4, 2026-11-09): one in a URL could be replayed for its
+    30 minutes to make a session."""
     if (moved := canonical_redirect(request, "module_reenter", entity_id=entity_id)) is not None:
         return moved
     if (refused := _get_only(request)) is not None:
         return refused
-    from hub.session import signed_in_user
-
-    destination = safe_next(request.GET.get("next"), company_path(entity_id, "petty-cash"))
-    if signed_in_user(request) is not None:
-        return HttpResponseRedirect(destination)
-    raw = request.GET.get("token", "")
-    lapsed = "Your session ran out. Mind logging back in?"
-    off = "Something's off with your session. Mind logging back in?"
-    if not raw:
-        flash(request, lapsed, "warning")
-        return HttpResponseRedirect("/")
-    try:
-        claims = jwt.decode(raw, settings.SECRET_KEY, algorithms=["HS256"], leeway=60)
-    except jwt.ExpiredSignatureError:
-        flash(request, lapsed, "warning")
-        return HttpResponseRedirect("/")
-    except jwt.PyJWTError:
-        flash(request, off, "warning")
-        return HttpResponseRedirect("/")
-    if claims.get("module") != MODULE_TOKEN_CLAIM:
-        logger.warning("/enter refused a non-module token (scope=%r) for entity %s", claims.get("scope"), entity_id)
-        flash(request, off, "warning")
-        return HttpResponseRedirect("/")
-    user = User.objects.filter(id=claims.get("user_id")).first() if _entity_uuid(claims.get("user_id")) else None
-    if user is None:
-        flash(request, "Hmm, that name doesn't seem to be in my list.", "danger")
-        return HttpResponseRedirect("/")
-    if not (is_superuser(user) or has_entity_access(user, str(entity_id))):
-        logger.warning("/enter refused user %s: not a member of entity %s", user.id, entity_id)
-        flash(request, NO_PERMISSION, "danger")
-        return HttpResponseRedirect("/")
-    sign_in(request, user)
-    return HttpResponseRedirect(destination)
-
-
-def _entity_uuid(value) -> bool:
-    try:
-        uuid.UUID(str(value))
-    except ValueError:
-        return False
-    return True
+    early, _user = signed_in_or_door(request)
+    if early is not None:
+        return early
+    return HttpResponseRedirect(safe_next(request.GET.get("next"), company_path(entity_id, "petty-cash")))
 
 
 # ---- out ----------------------------------------------------------------------------------------

@@ -159,10 +159,10 @@ preview set, the Terms answer and the Xero nonce. Flask's `sessions` table is no
 - **Logs never hold a secret from an address.** Each request is one line
   (`minty_shared`'s request middleware): the path only, never the query string, with the
   invitation token shown as `[redacted]` (`core/hardening.loggable_path`); runserver's own access
-  line is switched off. gunicorn runs with no access log (`Dockerfile`), but unlike Flask's
-  `NoAccessLogger` nothing stops the host turning one on: a `GUNICORN_CMD_ARGS` with
-  `--access-logfile` would log `/enter?token=`, `/callback?code=` and `/auth/email/handoff?h=`
-  (Render did that to Flask in October). Not checked on Render yet.
+  line is switched off. gunicorn's access log goes to `/dev/null` on its command line
+  (`Dockerfile`), which a host's `GUNICORN_CMD_ARGS` cannot override (Render's native runtime did
+  log Flask's `/enter?token=` in October; every service now runs in Docker);
+  `tests/test_settings.py` holds it.
 - **No state change by GET**: sign-out, leaving a company, Xero disconnect and the invite Terms
   check (`POST`, the token in the body) all refuse GET.
 - **The gaps the URL security round recorded (2026-10-05):**
@@ -170,9 +170,14 @@ preview set, the Terms answer and the Xero nonce. Flask's `sessions` table is no
     carries a per-session nonce, spent at the callback and checked before any code exchange,
     so a forged `/callback` link signs nobody in and attaches no organisation (section 7);
     `/logout` and `/leave-entity` are POST only, from a front end.
-  - **Still open:** tokens ride in query strings between the apps (`/landing?token=`,
-    `/entity/<co>/enter?token=`, the onboarding launch's `?token=`). The planned end is a
-    one-time code the Next apps exchange server-side, parked like the code sign-in's hand-off.
+  - FIXED 2026-11-09 (gap 4, owner): **no token rides in an address.** Into an app, accounts-api
+    hands over a **one-time code** (`?code=`, parked like the code sign-in's hand-off,
+    `hub/parked.py`: single use, 2 minutes, bound to the app's origin) that the app's landing swaps
+    for its token at `POST /api/handoff/redeem`, in the browser (`@minty/shared/landing` v0.16).
+    The way back carries **no token**: `/enter` works on the session, else the front door and
+    back (owner: session only) - it no longer turns a replayable 30-minute token into a session.
+    The `redesign` Workers were not brought along (owner): their old landing cannot swap a code,
+    so signing in to them stops working until `redesign` catches up.
 
 ### 3.2 Addresses: `/entity/<shortid>/<name>/...`
 
@@ -263,12 +268,13 @@ minty-onboarding-api; a mismatch 401s every call). `hub/handoffs.py`, with Flask
 
 | Token | Minted by | Lifetime | Claims | Verified by |
 |---|---|---|---|---|
-| module | `module_token`, at every hand-off into minty-web, the payments app and Petty Cash web | 30 min | `user_id`, `entity_id` (empty when unscoped), `xero_org_id`, `role`, `system_role`, `module: "billing"`, `sid` (the sign-in's `login_sid`), `billing_enabled`, `petty_cash_enabled`, `is_view_only` (a system super admin in a company they are not a member of), `iat`, `exp` | minty-payment-request-api `core/auth.BearerAuth`, minty-subscription-api, minty-petty-cash-api (module tokens only), this service's hub door and `/enter` |
+| module | `module_token`, at every hand-off into minty-web, the payments app and Petty Cash web | 30 min | `user_id`, `entity_id` (empty when unscoped), `xero_org_id`, `role`, `system_role`, `module: "billing"`, `sid` (the sign-in's `login_sid`), `billing_enabled`, `petty_cash_enabled`, `is_view_only` (a system super admin in a company they are not a member of), `iat`, `exp` | minty-payment-request-api `core/auth.BearerAuth`, minty-subscription-api, minty-petty-cash-api (module tokens only), this service's hub door |
 | onboarding | `onboarding_token`, when the wizard is launched (`/entity/create`, a company still onboarding) | 60 min | `user_id`, `scope: "onboarding"`, `iat`, `exp` | minty-onboarding-api `core/auth.OnboardingBearerAuth`; this service's `/api/onboarding/*` (`hub/onboarding.py`) |
 
 - **Into the apps** (signed in, else the front door with `next`): the browser goes to the app's
-  `/landing?next=&entity_id=&entity_name=&token=`, or the onboarding app's
-  `/?token=&first=&last=&entity_name=&entity_id=&fresh=`.
+  `/landing?next=&entity_id=&entity_name=&code=`, or the onboarding app's
+  `/?code=&first=&last=&entity_name=&entity_id=&fresh=` - a one-time code for the token, never
+  the token (gap 4; the swap is below).
   - `/entity`: minty-web's company list (`/entities`) with an unscoped token, carrying what was
     flashed. `/entity/create`: a fresh onboarding wizard.
   - `/entity/<co>/modules`: a company still onboarding to the wizard; one module on to that app;
@@ -290,9 +296,13 @@ minty-onboarding-api; a mismatch 401s every call). `hub/handoffs.py`, with Flask
   `{"error": "unauthorized"}`. The company travels as `?entity=` and is checked per route, never
   read from the token. CORS echoes the three front ends, their `EXTRA_FRONTEND_ORIGINS` and their
   preview sets, refusals included.
-- **Coming back** is `GET /entity/<co>/enter?token=&next=`: a **module** token (the onboarding
-  token is refused) for a member of `<co>` (or a superuser) becomes a session; `next` is a path on
-  this site, else the company's Petty Cash. A browser already signed in is sent straight on.
+- **Coming back** is `GET /entity/<co>/enter?next=`: a browser signed in here is sent straight on
+  (`next` is a path on this site, else the company's Petty Cash); with no session it goes to the
+  front door and returns here once signed in. No token is read from the address (gap 4).
+- **One-time codes** (gap 4): `POST /api/handoff/redeem` `{"code"}` answers `{"token"}` once, to
+  the origin the code was handed to; used, lapsed or forged is 400, another origin 403 (and the
+  code is spent), always one sentence; CORS for the four front ends, `Cache-Control: no-store`.
+  Neither code nor token is logged.
   Flask's `/entity/<co>/billing-relogin` was not moved (no caller).
 - The entitlement claims in the token are a hint only: minty-payment-request-api re-reads
   `entity_function_map` (`GET /api/auth/entitlements`) and the database decides what a module shows.

@@ -12,6 +12,7 @@ fall-through is gone (2026-11-06), so a path not below is a 404, and Flask is no
 | `/health` | Django: `{"status": "ok", "service": "minty-accounts-api"}`. It never calls Flask |
 | `POST /api/internal/xero/token` | Django (Phase 2): the Xero token service, below |
 | `POST /api/internal/xero/sync` | Django (Phase 3): the one Xero account/contact sync, below |
+| `POST /api/handoff/redeem` | Django (gap 4, 2026-11-09, `hub/handoffs.py`): an app's landing swaps its one-time code for its token |
 | `GET /auth/notices`, `GET /legal/current`, `POST /legal/invite-terms-status` | Django (Phase 5A, `hub/public.py`) |
 | `GET /api/me/entities`, `GET/PATCH /api/me/profile`, `GET /api/me/terms`, `POST /api/me/terms/accept`, `POST /api/me/contact` | Django (Phase 5B, `hub/`) |
 | `GET /api/me/company/users`, `PATCH/DELETE /api/me/company/users/<id>`, `POST /api/me/company/invitations`, `POST .../invitations/<id>/cancel` and `/resend`, `GET/PATCH /api/me/company/integration` | Django (Phase 5C, `hub/company.py`) |
@@ -276,8 +277,10 @@ issued verifies on the other. Sign-up makes the account and its Terms agreement 
    `/xero_reconnect`, `/callback`).
 3. **`/logout` and `/leave-entity` are POST only** (GET is 405), and the POST must come from one of
    the front ends (`Origin`; the cookie is SameSite=Lax). The apps sign out with a form post.
-4. Tokens still ride in query strings between the apps (`/landing?token=`, `/enter?token=`): a
-   follow-up - a one-time code the Next apps exchange server-side, parked the same way as gap 1.
+4. **No token in an address (owner, 2026-11-09).** Each hand-off into an app carries a one-time
+   code (`hub/parked.py`, gap 1's parking, now shared: single use, 2 minutes, bound to the app's
+   origin) that the app's landing swaps at `POST /api/handoff/redeem`; `/enter` works on the
+   session alone. authentication.md section 6 has the detail.
 
 **Xero OAuth** (6D, `hub/xero_oauth.py`, `xero/services/connect.py`): sign in with Xero, and
 connect or reconnect a company, with Flask's scopes, state shapes, callback branches,

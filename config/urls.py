@@ -33,6 +33,7 @@ urlpatterns = [
     path("api/internal/xero/token", internal_xero_access_token, name="internal_xero_access_token"),
     # Phase 3 (2026-11-06): the one Xero account/contact sync, new (Flask's ran in each caller).
     path("api/internal/xero/sync", internal_xero_sync, name="internal_xero_sync"),
+    path("api/handoff/redeem", handoffs.redeem_code, name="redeem_handoff_code"),
     # Phase 5 (2026-11-06): the public routes, Flask's paths.
     path("auth/notices", public.auth_notices, name="auth_notices"),
     path("legal/current", public.legal_current, name="legal_current"),
