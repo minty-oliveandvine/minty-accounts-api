@@ -332,7 +332,7 @@ services:
     container_name: minty-stack-subscription-api
     restart: unless-stopped
     env_file:
-      # Stripe keys, SMTP_URL and the senders (SUBSCRIPTION_FROM, ONBOARDING_FROM) come from the repo's .env or this one.
+      # Stripe keys and SMTP_URL come from the repo's .env or this one (the senders are set below).
       - path: ${SUBSCRIPTION_API_PATH:-../../../minty-subscription-api}/.env
         required: false
       - path: ./.env
@@ -353,6 +353,11 @@ services:
       DATABASE_URL: *database-url
       # The daily pass: leave it off locally - pointed at real payers it starts charging them.
       SUBSCRIPTION_SCHEDULER_ENABLED: ${SUBSCRIPTION_SCHEDULER_ENABLED:-0}
+      # The two senders are required (it refuses to start without them, 2026-11-05). CI has no
+      # repo .env, so the stack names placeholders; set them in this stack's .env to override.
+      # The stack sends no real mail.
+      SUBSCRIPTION_FROM: ${SUBSCRIPTION_FROM:-Minty <billing@minty.test>}
+      ONBOARDING_FROM: ${ONBOARDING_FROM:-Minty <onboarding@minty.test>}
       # Server-to-server: the one forwarded call (invite-admin). Internal name.
       ACCOUNTS_API_URL: http://accounts-api:8002
       # The address a PERSON reaches accounts-api at - every link in a subscription email
