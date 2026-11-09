@@ -46,4 +46,5 @@ there. Set `MINTY_TEST_PG_URI` (and a unique `MINTY_TEST_PG_DBNAME`) for the Pos
 built from minty-db's schema file.
 
 CI is the shared `python-api.yml@v1` (`.github/workflows/ci.yml`). Feature detail:
-`docs/features/accounts-api.md`.
+`docs/features/accounts-api.md`; how a person gets in, system-wide: `docs/features/authentication.md`.
+Every service's variables: minty-infra's `docs/ENVIRONMENT.md`.
