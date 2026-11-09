@@ -243,6 +243,9 @@ def test_an_invitation_is_sent_and_listed(shop, settings):
     assert message.subject == "You've been invited to Olive & Vine on Minty"
     assert f"{settings.ACCOUNTS_API_URL}/invitation/accept/{inv.token}?fn=New&amp;ln=Person" in message.body
     assert f"{settings.ACCOUNTS_API_URL}/static/img/new_logo.png?v=" in message.body
+    # the footer names the operator (owner, 2026-11-09)
+    assert f"&copy; {datetime.now(UTC).year} Daily Minty Limited" in message.body
+    assert "Petty Cash Management" not in message.body
     assert (inv.first_name, inv.last_name, str(inv.role), inv.invited_by) == ("New", "Person", "cashier",
                                                                              shop["manager"].id)
     assert inv.expires_at > datetime.now(UTC) + timedelta(days=6)

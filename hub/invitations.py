@@ -338,7 +338,7 @@ def _build_invitation_html(
                 style="padding:16px 40px 24px 40px;text-align:center;border-top:1px solid #e2e8f0;">
           <p style="color:#a0aec0;font-size:12px;line-height:1.5;margin:0;">
             If you did not expect this invitation you can safely ignore this email.<br />
-            &copy; {_current_year()} Minty &mdash; Petty Cash Management
+            &copy; {_current_year()} Daily Minty Limited
           </p>
         </td></tr>
 
