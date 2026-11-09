@@ -1,0 +1,11 @@
+# Never into an image: local secrets and machine state (a local `docker build` copies the whole
+# folder; Render builds from git, which has none of these, but a local image must not either).
+.env
+.env.*
+!.env.example
+docker/stack/.env
+.venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.git/

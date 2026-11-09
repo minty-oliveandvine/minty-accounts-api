@@ -23,7 +23,8 @@ for _name in ("PREVIEW_ORIGIN_REGEX", "EXTRA_FRONTEND_ORIGINS", "CONTACT_EMAIL",
     os.environ.pop(_name, None)
 os.environ.setdefault("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 
-from config.dburl import parse_database_url  # noqa: E402
+from minty_shared.config import django_database  # noqa: E402
+
 from config.settings import *  # noqa: E402,F403
 
 # No test sends real mail: Django's in-memory outbox (mail.outbox).
@@ -34,7 +35,7 @@ if _PG_URI:
     from urllib.parse import parse_qs as _parse_qs
     from urllib.parse import urlsplit as _urlsplit
 
-    _db, _schema = parse_database_url(_PG_URI)
+    _db, _schema = django_database(_PG_URI)
     if "schema" in _parse_qs(_urlsplit(_PG_URI).query):
         DB_SCHEMA = _schema
     _db["OPTIONS"]["options"] = f"-c search_path={DB_SCHEMA},public"  # noqa: F405

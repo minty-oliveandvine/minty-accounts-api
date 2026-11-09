@@ -12,8 +12,12 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-# No database and no migrate: Phase 1 serves /health and falls through to Flask for the rest.
-# Threads, not only processes: a request waiting on Flask (a Xero call, up to 150 s) must not
-# hold the whole worker. Timeout above the fall-through's 150 s read timeout. Shell form so a
+# No migrate at start: minty-db's schema and django_session are made by hand (docs/features).
+# Threads, not only processes: a request waiting on Xero (a sync, up to a few minutes) must not
+# hold the whole worker; the 180 s timeout covers the longest Xero call. Shell form so a
 # host-injected PORT is honoured; exec keeps gunicorn as the signalled process.
-CMD exec gunicorn -w 2 --threads 8 --timeout 180 -b "0.0.0.0:${PORT:-8000}" config.wsgi:application
+# --access-logfile /dev/null: gunicorn's access line prints the whole URL, and these URLs carry
+# secrets (/enter?token=, /callback?code=, /auth/email/handoff?h=, invitation links). The command
+# line wins over GUNICORN_CMD_ARGS, so no host setting can turn it back on (Render did that to
+# Flask, 2026-10-20). The request line (minty_shared's middleware) logs paths only.
+CMD exec gunicorn -w 2 --threads 8 --timeout 180 --access-logfile /dev/null -b "0.0.0.0:${PORT:-8000}" config.wsgi:application

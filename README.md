@@ -25,7 +25,7 @@ waits 2 s).
 | Variable | Required | What |
 |---|---|---|
 | `SECRET_KEY` | yes | The same key as Flask and the other APIs |
-| `DATABASE_URL` | yes | The shared schema, `?schema=pettycashv3` (`config/dburl.py`) |
+| `DATABASE_URL` | yes | The shared schema, `?schema=pettycashv3` (parsed by `minty_shared.config.django_database`; a schema that is not a plain identifier refuses to start) |
 | `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET` | yes | Xero's OAuth client, Flask's same app |
 | `XERO_API_BASE_URL` | no (`https://api.xero.com/api.xro/2.0`) | Xero's accounting API |
 | `ALLOWED_HOSTS` | no (`*`) | Comma-separated |

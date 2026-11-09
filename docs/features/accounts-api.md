@@ -227,7 +227,7 @@ nobody gives a role above their own or manages someone who matches or outranks t
   for the company itself, and available in development only.
 - **The onboarding routes** (`hub/onboarding.py`). minty-onboarding-api forwards its caller's token
   to them, and minty-subscription-api's "invite an admin" forwards to `/invite`. Both reach them
-  through `PETTY_CASH_URL`, so they need no change.
+  through `ACCOUNTS_API_URL`, so they need no change.
   - Flask's onboarding door applies: any valid token, 401 `{"error": "Unauthorized"}`, and CORS for
     the onboarding app with `GET, POST, PUT, OPTIONS`.
   - The answers use Flask's words.

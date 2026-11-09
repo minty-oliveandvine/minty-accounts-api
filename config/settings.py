@@ -11,10 +11,8 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
-from minty_shared.config import django_email, is_development, preview_origin_regex
+from minty_shared.config import django_database, django_email, is_development, preview_origin_regex
 from minty_shared.logctx import logging_config
-
-from config.dburl import database_url, parse_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -77,11 +75,11 @@ SESSION_COOKIE_SECURE = not DEVELOPMENT
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 
-# The schema Minty owns; ``?schema=`` on DATABASE_URL names it (default pettycashv3,
-# config/dburl.py) and every db_table resolves through search_path. Required: a missing URL must
-# not quietly reach the local default from a host.
-_required("DATABASE_URL")
-_DEFAULT_DB, DB_SCHEMA = parse_database_url(database_url())
+# The schema Minty owns; ``?schema=`` on DATABASE_URL names it (default pettycashv3) and every
+# db_table resolves through search_path. minty_shared.config refuses a schema that is not a plain
+# identifier (the other APIs' rule). Required: a missing URL must not quietly reach the local
+# default from a host.
+_DEFAULT_DB, DB_SCHEMA = django_database(_required("DATABASE_URL"))
 DATABASES = {"default": _DEFAULT_DB}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
@@ -125,7 +123,7 @@ EXTRA_FRONTEND_ORIGINS = _extra_frontend_origins(os.environ.get("EXTRA_FRONTEND_
 
 #: This service's public address (the emailed links, the invitation's logo). Required outside
 #: development: a guessed address in an email is worse than none (Flask's rule).
-ACCOUNTS_API_URL = (os.environ.get("ACCOUNTS_API_URL") or os.environ.get("PETTY_CASH_URL") or "").strip().rstrip("/")
+ACCOUNTS_API_URL = (os.environ.get("ACCOUNTS_API_URL") or "").strip().rstrip("/")
 if not ACCOUNTS_API_URL and not DEVELOPMENT:
     raise ImproperlyConfigured("ACCOUNTS_API_URL is required and is not set")
 
