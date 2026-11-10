@@ -129,12 +129,26 @@ def test_a_xero_connected_shop_keeps_its_mapping():
     first = e2e_seed.seed("pw")
     from minty_db.models import Entity
 
-    Entity.objects.filter(id=first["E2E_MINTY_ENTITY"]).update(xero_org_id="org-1", xero_tenant_name="Demo Company")
+    Entity.objects.filter(id=first["E2E_MINTY_ENTITY"]).update(xero_org_id="org-1", xero_tenant_name="Demo Company",
+                                                                status="connected")
     AccountInfo.objects.filter(entity_id=first["E2E_MINTY_ENTITY"]).delete()
 
     e2e_seed.seed("pw")
 
     assert not AccountInfo.objects.filter(entity_id=first["E2E_MINTY_ENTITY"]).exists()
+
+
+def test_a_shop_disconnected_from_xero_gets_its_mapping_back():
+    """A disconnect keeps the organisation (Xero optional, 2026-11-10); that is not a connection."""
+    first = e2e_seed.seed("pw")
+    from minty_db.models import Entity
+
+    Entity.objects.filter(id=first["E2E_MINTY_ENTITY"]).update(xero_org_id="org-1", status="disconnected")
+    AccountInfo.objects.filter(entity_id=first["E2E_MINTY_ENTITY"]).delete()
+
+    e2e_seed.seed("pw")
+
+    assert AccountInfo.objects.filter(entity_id=first["E2E_MINTY_ENTITY"]).exists()
 
 
 def test_print_emits_the_env_block(monkeypatch, capsys):

@@ -213,3 +213,74 @@ def test_the_route_refuses_a_token_for_another_route_and_a_company_with_no_conne
     resp = _post(entity.id)
     assert (resp.status_code, resp.json()) == (409, {"error": "Xero needs to be connected again.", "reconnect": True})
     assert xero.asked == []
+
+
+# ---- the Xero copies and the links (Xero optional, EXPAND, 2026-11-10) -------------------------
+
+
+def _copies(entity):
+    from minty_db.models import XeroAccount
+
+    return {m.xero_guid: m for m in XeroAccount.objects.filter(entity_id=entity.id, xero_org_id=TENANT)}
+
+
+def test_each_account_gets_its_xero_copy_and_is_linked_to_it(company, xero):
+    xero.accounts = [acct("a-exp", "429", "General", Class="EXPENSE"),
+                     acct("a-bank", "Business Bank Account", "Business Bank Account", "BANK")]
+
+    _run(company)
+
+    copies, rows = _copies(company), _accounts(company)
+    assert set(copies) == {"a-exp", "a-bank"}
+    exp = copies["a-exp"]
+    assert (exp.code, exp.name, exp.xero_type, exp.xero_class, exp.status) == ("429", "General", "EXPENSE", "EXPENSE",
+                                                                                  "ACTIVE")
+    assert copies["a-bank"].code is None, "a bank account's name in the code field is not a code"
+    assert rows["a-exp"].xero_account_link_id == exp.id
+    assert rows["a-bank"].xero_account_link_id == copies["a-bank"].id
+
+
+def test_a_recode_follows_and_an_account_xero_dropped_is_marked_deleted_in_the_copy(company, xero):
+    xero.accounts = [acct("a-1", "429", "General"), acct("a-2", "430", "Travel")]
+    _run(company)
+    first = _copies(company)
+    xero.accounts = [acct("a-1", "469", "Rent")]
+
+    _run(company)
+
+    copies = _copies(company)
+    assert copies["a-1"].id == first["a-1"].id, "the same copy, upserted by Xero id"
+    assert (copies["a-1"].code, copies["a-1"].name, copies["a-1"].status) == ("469", "Rent", "ACTIVE")
+    assert copies["a-2"].status == "DELETED", "kept, as the sync marks what Xero no longer sends"
+
+
+def test_each_contact_gets_its_copy_and_a_minty_supplier_is_left_alone(company, xero):
+    from minty_db.models import XeroContact
+
+    XeroContactSync.objects.create(entity_id=company.id, name="Kept In Minty", source="user")
+    xero.contact_pages = [[{"ContactID": "c-1", "Name": "ABC Supplies"}]]
+    _run(company)
+    xero.contact_pages = [[{"ContactID": "c-1", "Name": "ABC Supplies Ltd"}]]
+    _run(company)
+
+    copy = XeroContact.objects.get(entity_id=company.id, xero_guid="c-1")
+    assert (copy.name, copy.xero_org_id) == ("ABC Supplies Ltd", TENANT)
+    assert XeroContactSync.objects.get(xero_contact_id="c-1").xero_contact_link_id == copy.id
+    minty = XeroContactSync.objects.get(entity_id=company.id, name="Kept In Minty")
+    assert (minty.xero_contact_id, minty.xero_contact_link_id) == (None, None)
+
+
+def test_a_disconnect_keeps_every_account_and_the_copies(company, xero):
+    """Xero's accounts and the company's own stay (a disconnect keeps the organisation, 2026-11-10)."""
+    from xero.services.disconnect import disconnect_entity_from_xero
+
+    xero.accounts = [acct("a-1", "429", "General")]
+    _run(company)
+    own = AccountInfo.objects.create(entity_id=company.id, name="Petty Cash", type="BANK", code="090",
+                                     xero_code="090", account_type="bank", status="ACTIVE", source="user")
+
+    disconnect_entity_from_xero(company.id)
+
+    kept = set(AccountInfo.objects.filter(entity_id=company.id).values_list("xero_account_id", "id"))
+    assert {x for x, _ in kept} == {"a-1", None} and own.id in {i for _, i in kept}
+    assert set(_copies(company)) == {"a-1"}, "the Xero copies stay, keyed by the organisation"

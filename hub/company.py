@@ -402,7 +402,7 @@ def _conflict(user: User, entity_id: str, token: str | None) -> dict | None:
     if held is None or held["entity_id"] == entity_id:
         return None
     other = Entity.objects.filter(id=held["entity_id"]).first() if _uuid(held["entity_id"]) else None
-    if other is None or not other.xero_org_id:
+    if other is None or not other.xero_org_id or other.status == "disconnected":  # kept, not held
         return None
     return {"entity_id": str(other.id), "entity_name": other.name, "organisation": other.xero_tenant_name or None,
             "can_move": settings.DEVELOPMENT and has_permission(user, Permission.XERO_SETTINGS_UPDATE, str(other.id))}
@@ -528,7 +528,7 @@ def company_xero_release(request: HttpRequest) -> HttpResponse:
     if not settings.DEVELOPMENT:
         return refuse(request, "Moving a Xero organisation between companies isn't available. "
                       + held_elsewhere_sentence(other.name), 403)
-    if not other.xero_org_id:
+    if not other.xero_org_id or other.status == "disconnected":  # a kept organisation is no claim
         logger.info("Xero release: entity=%s already free actor=%s", release_id, user.id)
         return respond(request, {"message": f"\"{other.name}\" is already disconnected from Xero."})
     try:

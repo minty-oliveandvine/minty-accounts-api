@@ -723,7 +723,8 @@ def test_a_ghost_claim_is_cleared_and_the_connect_goes_through(shop, xero):
     client = signed_in(shop["owner"])
     callback(client, connect_flow(client, shop["entity"]))
     assert fresh(shop["entity"]).xero_org_id == "t-1"
-    assert (fresh(old).xero_org_id, fresh(old).status, fresh(old).connected_by_user_id) == (None, "disconnected", None)
+    # the ghost is disconnected and keeps its organisation (Xero optional): no longer a claim
+    assert (fresh(old).xero_org_id, fresh(old).status, fresh(old).connected_by_user_id) == ("t-1", "disconnected", None)
 
 
 @pytest.mark.parametrize("probe", [500, "raise", "gone"])
@@ -736,7 +737,7 @@ def test_a_claim_xero_cannot_confirm_is_a_ghost(shop, xero, probe):
     else:
         xero.probe_status["their-token"] = probe
     assert connect.live_org_claimant("t-1", shop["entity"].id, shop["owner"].id) is None
-    assert fresh(old).xero_org_id is None and fresh(old).status == "disconnected"
+    assert fresh(old).xero_org_id == "t-1" and fresh(old).status == "disconnected"
 
 
 def test_a_disconnected_claimant_never_blocks(shop, xero):
@@ -744,7 +745,7 @@ def test_a_disconnected_claimant_never_blocks(shop, xero):
     hold(old, shop["rival"])
     Entity.objects.filter(id=old.id).update(status="disconnected")
     assert connect.live_org_claimant("t-1", shop["entity"].id, shop["owner"].id) is None
-    assert fresh(old).xero_org_id is None and xero.probes == []
+    assert fresh(old).xero_org_id == "t-1" and xero.probes == []  # kept, untouched, never asked about
 
 
 def test_every_duplicate_claimant_is_examined(shop, xero):
@@ -753,7 +754,7 @@ def test_every_duplicate_claimant_is_examined(shop, xero):
     hold(second, shop["rival"])
     xero.tokens[str(second.id)], xero.sees["dup-token"] = ("dup-token", "t-1"), ["t-1"]
     assert connect.live_org_claimant("t-1", shop["entity"].id, shop["owner"].id) == second
-    assert fresh(first).xero_org_id is None
+    assert (fresh(first).xero_org_id, fresh(first).status) == ("t-1", "disconnected")
 
 
 def test_an_empty_auth_event_names_the_company_holding_the_org_and_revokes_nothing(shop, xero):

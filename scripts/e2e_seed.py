@@ -150,7 +150,7 @@ def _xero_placeholders(entity, user) -> None:
     )
 
     settings, _ = EntityPettycashSettings.objects.get_or_create(entity_id=entity.id)
-    if entity.xero_org_id:
+    if entity.xero_org_id and entity.status != "disconnected":  # a disconnect keeps the organisation
         print(f"entity is connected to Xero ({entity.xero_tenant_name}); mapping left as it is")
         XeroContactSync.objects.filter(entity_id=entity.id, category="E2E").delete()
         return

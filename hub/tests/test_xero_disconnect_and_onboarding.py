@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 import pytest
 from django.core import mail
+from django.db import connection
 from django.test import Client
 from minty_db.models import (
     AccountInfo,
@@ -74,23 +75,29 @@ def tokens_of(person):
 # ---- the hub's Disconnect ---------------------------------------------------------------------
 
 
-def test_disconnecting_revokes_at_xero_clears_the_cache_and_keeps_the_last_connection_date(shop, monkeypatch):
+def test_disconnecting_revokes_at_xero_and_keeps_the_organisation_and_its_copy(shop, monkeypatch):
+    """Xero optional (2026-11-10, design doc 4): the organisation, the synced chart and contacts and the
+    Petty Cash mapping all stay - the company works on in Minty and a reconnect finds them again."""
     xero = Xero(monkeypatch)
     hold(shop["entity"], shop["admin"])
     done = call("post", "/api/me/company/xero/disconnect", shop["admin"], shop["entity"].id)
     assert done.status_code == 200, done.json()
     body = done.json()
     assert body["message"] == "You're disconnected from Xero." and body["xero"]["status"] == "disconnected"
+    assert (body["xero"]["connected"], body["xero"]["needs_reconnect"]) == (False, True)
+    assert body["xero"]["organisation"] == "Xero Org Ltd"
     assert datetime.fromisoformat(body["xero"]["last_connected_at"]) == datetime(2026, 9, 1, 2, 0, tzinfo=UTC)
     assert xero.deleted == [f"{disconnect.CONNECTIONS_URL}/conn-1"]
     org = Entity.objects.get(id=shop["entity"].id)
-    assert (org.status, org.xero_org_id, org.connected_by_user_id) == ("disconnected", None, None)
+    assert (org.status, org.xero_org_id, org.connected_by_user_id) == ("disconnected", "t-1", None)
+    if connection.vendor == "postgresql":  # the schema's trigger derives it
+        assert org.xero_status == "disconnected"
     assert tokens_of(shop["admin"]) == (None, None, None)
-    assert not AccountInfo.objects.filter(entity_id=org.id).exists()
-    assert not XeroContactSync.objects.filter(entity_id=org.id).exists()
-    assert not EntityBillAccountXero.objects.filter(entity_id=org.id).exists()
+    assert AccountInfo.objects.filter(entity_id=org.id).exists()
+    assert XeroContactSync.objects.filter(entity_id=org.id).exists()
+    assert EntityBillAccountXero.objects.filter(entity_id=org.id).exists()
     mapping = EntityPettycashSettings.objects.get(entity_id=org.id)
-    assert (mapping.pettycash_account_id, mapping.cash_sale_contact_id) == (None, None)
+    assert mapping.pettycash_account_id is not None and mapping.cash_sale_contact_id is not None
 
 
 def test_the_connectors_tokens_stay_while_another_company_of_theirs_is_connected(shop, monkeypatch):
@@ -102,6 +109,16 @@ def test_the_connectors_tokens_stay_while_another_company_of_theirs_is_connected
     assert XeroContactSync.objects.filter(entity_id=shop["other"].id).exists()
 
 
+def test_a_company_disconnected_earlier_keeps_no_tokens_alive(shop, monkeypatch):
+    """Its kept organisation is not a connection: the last connected company's disconnect clears them."""
+    Xero(monkeypatch)
+    hold(shop["entity"], shop["admin"])
+    hold(shop["other"], shop["admin"], tenant="t-2")
+    Entity.objects.filter(id=shop["other"].id).update(status="disconnected")  # older rows may still name the connector
+    assert call("post", "/api/me/company/xero/disconnect", shop["admin"], shop["entity"].id).status_code == 200
+    assert tokens_of(shop["admin"]) == (None, None, None)
+
+
 def test_xero_not_answering_still_disconnects_here(shop, monkeypatch):
     hold(shop["entity"], shop["admin"])
     monkeypatch.setattr(disconnect, "resolve_entity_access_token", lambda entity_id: ("access", "t-1"))
@@ -111,7 +128,8 @@ def test_xero_not_answering_still_disconnects_here(shop, monkeypatch):
 
     monkeypatch.setattr(disconnect.requests, "get", down)
     assert call("post", "/api/me/company/xero/disconnect", shop["admin"], shop["entity"].id).status_code == 200
-    assert Entity.objects.get(id=shop["entity"].id).xero_org_id is None
+    org = Entity.objects.get(id=shop["entity"].id)
+    assert (org.status, org.xero_org_id, org.connected_by_user_id) == ("disconnected", "t-1", None)
 
 
 def test_a_failed_disconnect_says_so_and_a_cashier_may_not(shop, monkeypatch):
@@ -130,13 +148,14 @@ def test_a_failed_local_save_changes_nothing(shop, monkeypatch):
     Xero(monkeypatch)
     hold(shop["entity"], shop["admin"])
 
-    def boom(*args):
+    def boom(*args, **kwargs):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(disconnect, "invalidate_entity_xero_cache", boom)
+    monkeypatch.setattr(disconnect, "_mark", boom)
     with pytest.raises(RuntimeError):
         disconnect.disconnect_entity_from_xero(shop["entity"].id)
-    assert Entity.objects.get(id=shop["entity"].id).xero_org_id == "t-1"
+    org = Entity.objects.get(id=shop["entity"].id)
+    assert (org.status, org.connected_by_user_id) == ("connected", shop["admin"].id)
     assert tokens_of(shop["admin"]) == ("a", "r", "i")
 
 
@@ -177,6 +196,8 @@ def test_the_conflict_is_settled_against_the_database_not_the_token(shop, settin
     assert integration(shop["admin"], shop["entity"], conflict(shop["entity"], "Olive & Vine")) is None  # itself
     hold(shop["other"], shop["admin"], tenant="t-2")
     assert integration(shop["cashier"], shop["entity"], conflict(shop["other"], "Other Co"))["can_move"] is False
+    Entity.objects.filter(id=shop["other"].id).update(status="disconnected", connected_by_user_id=None)
+    assert integration(shop["admin"], shop["entity"], conflict(shop["other"], "Other Co")) is None  # kept, not held
 
 
 def test_a_forged_conflict_offers_nothing_and_outside_development_nothing_moves(shop, settings):
@@ -198,7 +219,7 @@ def test_the_move_releases_the_other_company_and_nothing_else(shop, settings, mo
     done = release(shop["admin"], shop["entity"], {"entity_id": str(shop["other"].id)})
     assert (done.status_code, done.json()) == (200, {"message": "\"Other Co\" is disconnected from Xero."})
     freed = Entity.objects.get(id=shop["other"].id)
-    assert (freed.xero_org_id, freed.status) == (None, "disconnected")
+    assert (freed.xero_org_id, freed.status) == ("t-1", "disconnected")  # kept, no longer a claim
     assert Entity.objects.get(id=shop["entity"].id).xero_org_id is None
     again = release(shop["admin"], shop["entity"], {"entity_id": str(shop["other"].id)})
     assert again.status_code == 200 and "already disconnected" in again.json()["message"]
@@ -446,8 +467,8 @@ def test_the_wizard_can_free_another_companys_org_but_only_with_permission(wizar
     done = onboard("post", "/api/onboarding/xero/release", admin, {"entity_id": str(company.id)})
     assert done.json() == {"ok": True, "released": True, "entity_name": "New Co"}
     org = Entity.objects.get(id=company.id)
-    assert (org.xero_org_id, org.status) == (None, "disconnected")
-    assert not AccountInfo.objects.filter(entity_id=company.id).exists()
+    assert (org.xero_org_id, org.status) == ("t-1", "disconnected")  # kept, no longer a claim
+    assert AccountInfo.objects.filter(entity_id=company.id).exists()  # and its copy with it
     again = onboard("post", "/api/onboarding/xero/release", admin, {"entity_id": str(company.id)})
     assert again.json()["released"] is False
 

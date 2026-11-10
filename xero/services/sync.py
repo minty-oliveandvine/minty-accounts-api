@@ -18,6 +18,13 @@ times each time Petty Cash Settings opened; this asks once and does all of it:
 - ``entity_bill_account_xero`` (Payment Requests' list) likewise, and loses rows whose account is gone.
 - ``xero_contact_sync`` gains new contacts and renames changed ones. Nothing is removed: absence
   from Xero's answer is ambiguous (archived, a partial fetch).
+- **The Xero copies (Xero optional, minty-db v0.5's EXPAND, 2026-11-10).** Every account and contact
+  Xero sent is upserted into ``xero_account`` / ``xero_contact`` (keyed by company, organisation and
+  Xero id; Xero's values verbatim, the code read as ``account_code_from_xero`` reads it), and the
+  Minty row with that Xero id is linked to its copy (``xero_account_link_id`` /
+  ``xero_contact_link_id``). An account copy Xero no longer sends is marked ``DELETED``, never
+  removed: a link or a published record may name it. A row Minty made itself (no Xero id) is left
+  alone.
 
 A failed or empty fetch changes nothing. Each half runs in one transaction under Flask's lock
 (``pg_advisory_xact_lock(hashtextextended('xero-sync:<entity>', 0))``), so it never overlaps
@@ -31,7 +38,15 @@ import logging
 import requests
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from minty_db.models import AccountInfo, EntityAccountXero, EntityBillAccountXero, XeroContactSync
+from django.utils import timezone
+from minty_db.models import (
+    AccountInfo,
+    EntityAccountXero,
+    EntityBillAccountXero,
+    XeroAccount,
+    XeroContact,
+    XeroContactSync,
+)
 
 logger = logging.getLogger("minty-accounts-api")
 
@@ -161,8 +176,48 @@ def apply_accounts(entity_id, accounts: list[dict], org) -> dict:
                     counts["refreshed"] += 1
         _mirror_petty_cash(entity_id, org)
         _mirror_bills(entity_id)
+        if org:
+            _copy_accounts(entity_id, snapshot, org)
     logger.info("xero sync: accounts for company %s: %s", entity_id, counts)
     return counts
+
+
+def _code(account: dict) -> str | None:
+    """Xero's code as Minty reads it (the schema's ``account_code_from_xero``): none for an empty one,
+    or for a bank account whose "code" is its name."""
+    code = str(account.get("Code") or "").strip()
+    if not code or (str(account.get("Type") or "").strip().upper() == "BANK" and len(code) > 10):
+        return None
+    return code[:10]
+
+
+def _copy_accounts(entity_id, snapshot: dict, org) -> None:
+    """Upsert ``xero_account`` from Xero's answer, mark the ones it no longer sends ``DELETED``, and
+    link each Xero-made ``account_info`` row to its copy."""
+    now = timezone.now()
+    copies = {m.xero_guid: m for m in XeroAccount.objects.filter(entity_id=entity_id, xero_org_id=str(org))}
+    for guid, account in snapshot.items():
+        values = {
+            "code": _code(account), "name": _trunc(account.get("Name", ""), 150) or "",
+            "xero_type": _trunc(account.get("Type", ""), 50) or "", "xero_class": _trunc(account.get("Class"), 50),
+            "status": _status(account), "bank_account_number": _trunc(account.get("BankAccountNumber"), 50),
+            "bank_account_type": _trunc(account.get("BankAccountType"), 50), "synced_at": now,
+        }
+        copy = copies.get(guid)
+        if copy is None:
+            copies[guid] = XeroAccount.objects.create(entity_id=entity_id, xero_org_id=str(org), xero_guid=guid,
+                                                      **values)
+        else:
+            for field, value in values.items():
+                setattr(copy, field, value)
+            copy.save(update_fields=list(values))
+    XeroAccount.objects.filter(entity_id=entity_id, xero_org_id=str(org)).exclude(
+        xero_guid__in=list(snapshot)).exclude(status="DELETED").update(status="DELETED", synced_at=now)
+    for row in AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__in=list(snapshot)):
+        copy = copies[row.xero_account_id]
+        if row.xero_account_link_id != copy.id:
+            row.xero_account_link_id = copy.id
+            row.save(update_fields=["xero_account_link"])
 
 
 def _mirror_petty_cash(entity_id, org) -> None:
@@ -223,8 +278,35 @@ def apply_contacts(entity_id, contacts: list[dict], org) -> dict:
                 row.name = name
                 row.save(update_fields=["name"])
                 counts["renamed"] += 1
+        if org:
+            _copy_contacts(entity_id, contacts, org)
     logger.info("xero sync: contacts for company %s: %s", entity_id, counts)
     return counts
+
+
+def _copy_contacts(entity_id, contacts: list[dict], org) -> None:
+    """Upsert ``xero_contact`` from Xero's answer and link each Xero-made supplier to its copy.
+    Nothing is marked: the contact fetch is the whole list only when every page answered."""
+    now = timezone.now()
+    copies = {m.xero_guid: m for m in XeroContact.objects.filter(entity_id=entity_id, xero_org_id=str(org))}
+    for contact in contacts:
+        guid = contact.get("ContactID")
+        if not guid:
+            continue
+        name = _trunc(contact.get("Name", ""), 255) or ""
+        status = str(contact.get("ContactStatus") or "ACTIVE").strip().upper() or "ACTIVE"
+        copy = copies.get(guid)
+        if copy is None:
+            copies[guid] = XeroContact.objects.create(entity_id=entity_id, xero_org_id=str(org), xero_guid=guid,
+                                                      name=name, status=status, synced_at=now)
+        else:
+            copy.name, copy.status, copy.synced_at = name, status, now
+            copy.save(update_fields=["name", "status", "synced_at"])
+    for row in XeroContactSync.objects.filter(entity_id=entity_id, xero_contact_id__in=list(copies)):
+        copy = copies[row.xero_contact_id]
+        if row.xero_contact_link_id != copy.id:
+            row.xero_contact_link_id = copy.id
+            row.save(update_fields=["xero_contact_link"])
 
 
 def sync_company(entity_id, access_token: str, org) -> dict:

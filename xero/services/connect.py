@@ -216,11 +216,13 @@ def revoke_whole_auth_event(access_token) -> None:
 
 
 def reconcile_ghost(claimant: Entity) -> None:
-    """Clear a claimant's stale connection: it no longer holds the organisation."""
-    logger.info("Conflict live-check: entity %s (%s) is no longer connected on Xero's side; clearing stale "
-                "connection state and allowing the connect", claimant.id, claimant.name)
-    Entity.objects.filter(id=claimant.id).update(status="disconnected", xero_org_id=None, connected_by_user_id=None)
-    claimant.status, claimant.xero_org_id, claimant.connected_by_user_id = "disconnected", None, None
+    """Mark a claimant's stale connection ``disconnected``: it no longer holds the organisation at
+    Xero. It keeps the organisation as its last known one (Xero optional, 2026-11-10), as a
+    disconnect does, which is no claim on it."""
+    logger.info("Conflict live-check: entity %s (%s) is no longer connected on Xero's side; marking it "
+                "disconnected and allowing the connect", claimant.id, claimant.name)
+    Entity.objects.filter(id=claimant.id).update(status="disconnected", connected_by_user_id=None)
+    claimant.status, claimant.connected_by_user_id = "disconnected", None
 
 
 def still_live_on_xero(claimant: Entity) -> bool:
@@ -269,9 +271,9 @@ def live_org_claimant(tenant_id, target_entity_id, connecting_user_id=None) -> E
         claimants = claimants.exclude(id=target)
     for claimant in claimants:
         if claimant.status == "disconnected":
-            logger.info("Org claim check: entity %s (%s) is marked disconnected but still held tenant %s; clearing "
-                        "the stale claim", claimant.id, claimant.name, tenant_id)
-            reconcile_ghost(claimant)
+            # Its kept organisation (a disconnect keeps it) is no claim; it stays as it is.
+            logger.info("Org claim check: entity %s (%s) keeps tenant %s but is disconnected; not a claim",
+                        claimant.id, claimant.name, tenant_id)
             continue
         if connecting_user_id and claimant.connected_by_user_id == connecting_user_id:
             logger.info("Org claim check: entity %s (%s) holds tenant %s and is connected by the same user now "

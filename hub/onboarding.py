@@ -286,7 +286,7 @@ def onboarding_xero_release(request: HttpRequest) -> HttpResponse:
     if not settings.DEVELOPMENT:
         return _respond(request, {"error": "Moving a Xero organisation between companies isn't available. "
                                            + held_elsewhere_sentence(org.name)}, 403)
-    if not org.xero_org_id:
+    if not org.xero_org_id or org.status == "disconnected":  # a kept organisation is no claim
         logger.info("onboarding release: entity %s already free", org.id)
         return _respond(request, {"ok": True, "released": False, "entity_name": org.name})
     try:

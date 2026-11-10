@@ -395,7 +395,8 @@ token every Xero call for the company uses.
   the service above; Flask's `/api/internal/xero/{publish,deposit-correction,publish-reasons,
   petty-cash-settings}` are gone.
 - Disconnecting is `xero/services/disconnect.py`: the grant revoked at Xero (best effort), the
-  connector's tokens cleared when it was their last company, the company's Xero cache dropped.
+  connector's tokens cleared when it was their last connected company, the company marked
+  `disconnected` with its organisation and Xero copy kept (2026-11-10; `accounts-api.md`).
 - Tokens are never logged by this service's code. Flask's guard test
   (`tests/test_zz_no_token_logging.py`, a check over every logger call) has no counterpart here.
 

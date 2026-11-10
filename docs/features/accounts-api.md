@@ -132,6 +132,31 @@ It asks Xero for the ACTIVE accounts **once**. Flask asked three times each time
 **Contacts** come page by page (1,000 a page). New ones are added and renamed ones updated. Nothing
 is removed: absence from Xero's answer is ambiguous. A failed page discards the whole fetch.
 
+**The Xero copies** (Xero optional, minty-db v0.5's EXPAND, 2026-11-10; Minty
+`docs/modernisation/xero_optional_database.md`):
+- Every account and contact Xero sent is upserted into `xero_account` / `xero_contact`, keyed by
+  company, organisation and Xero id, with Xero's values verbatim. The code is read as the schema's
+  `account_code_from_xero` reads it: none for a bank account whose code field holds its name.
+- The Minty row with that Xero id is linked to its copy (`xero_account_link_id` /
+  `xero_contact_link_id`).
+- An account copy Xero no longer sends is marked `DELETED`, never removed: a link or a published
+  record may name it.
+- A row the company made in Minty (no Xero id) is left alone by the sync.
+
+**Disconnect keeps the organisation (2026-11-10, the design's section 4):** the shared disconnect
+(`xero/services/disconnect.py`) sets `status = 'disconnected'` (the trigger makes `xero_status =
+'disconnected'`) and clears only the connector and, when it was their last connected company, their
+tokens. The organisation, the synced chart and contacts, the bill codes and the Petty Cash mapping
+all stay, so the company works on in Minty and a reconnect to the same organisation finds them.
+Everything that acts at Xero already goes by `status`. A kept organisation is no claim on it:
+`connect.live_org_claimant` skips a `disconnected` claimant without touching it, a ghost claimant
+(`reconcile_ghost`) is marked `disconnected` and keeps its organisation, and the hub's "move it
+here" counts a `disconnected` company as already free. A connect to another organisation replaces
+the copy (`mirror_on_connect`). Onboarding's own Disconnect still clears the organisation (an
+`onboarding` company holding one reads as connected). Elsewhere: minty-petty-cash-api's Settings
+`xero_connected` and minty-payment-request-api's token lookup refuse a `disconnected` company;
+minty-web hides Disconnect once it is disconnected.
+
 **Safety:**
 - A failed or empty fetch changes nothing.
 - Each half is one transaction under Flask's lock,

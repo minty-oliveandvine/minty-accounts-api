@@ -9,15 +9,21 @@ In order:
    grants, and the one for this organisation is deleted. A lapsed token or Xero being down is
    logged, and the local side goes on.
 2. **Clear the connector's stored tokens** when this was the LAST company they connected. Tokens
-   are per person and shared across their companies.
-3. **Drop the cached Xero data** (the shared disconnect only), because whatever connects next may be
-   another organisation. That covers the mappings in ``entity_pettycash_settings``, the contacts of
-   the organisation being left, ``account_info`` (and ``entity_account_xero`` with it) and
-   ``entity_bill_account_xero``.
-4. **Mark the company** ``disconnected`` (onboarding: ``onboarding``), with no organisation and no
-   connector.
+   are per person and shared across their companies; a company disconnected earlier, which keeps
+   its organisation, is not a connection.
+3. **Mark the company** with no connector:
+   - the shared disconnect: ``disconnected`` (so ``xero_status = 'disconnected'``) and it KEEPS its
+     organisation, its synced chart and contacts, its bill codes and its Petty Cash mapping (Xero
+     optional, 2026-11-10; Minty's ``docs/modernisation/xero_optional_database.md`` section 4). It
+     works on in Minty and only the Xero actions are refused, each already gated on ``status``; a
+     reconnect to the same organisation finds everything again, and a connect to another one
+     replaces the copy (``connect.mirror_on_connect``). The kept organisation is no claim on it:
+     the connect conflict check counts only companies not ``disconnected``
+     (``connect.live_org_claimant``).
+   - onboarding's own Disconnect: stays ``onboarding`` with no organisation (its synced lists
+     kept, as before) - an ``onboarding`` company holding an organisation reads as connected.
 
-Steps 2-4 are one transaction: when they cannot be saved nothing is, and the caller says so. The
+Steps 2-3 are one transaction: when they cannot be saved nothing is, and the caller says so. The
 revoke at Xero may already have gone through, so the two sides can disagree.
 """
 
@@ -27,29 +33,13 @@ import logging
 
 import requests
 from django.db import transaction
-from minty_db.models import (
-    AccountInfo,
-    Entity,
-    EntityBillAccountXero,
-    EntityPettycashSettings,
-    User,
-    UserToken,
-    XeroContactSync,
-)
+from minty_db.models import Entity, User, UserToken
 
 from xero.services.tokens import resolve_entity_access_token
 
 logger = logging.getLogger("minty-accounts-api")
 
 CONNECTIONS_URL = "https://api.xero.com/connections"
-
-#: The mappings that name an organisation's accounts and contacts.
-ORG_SCOPED_SETTINGS = (
-    "pettycash_account_id", "bank_account_id", "cash_sale_account_id", "discrepancy_bank_account_id",
-    "discrepancy_account_id", "director_account_id", "cash_sale_contact_id", "director_contact_id",
-    "discrepancy_contact_id",
-)
-
 
 def _revoke_at_xero(org: Entity) -> None:
     try:
@@ -73,19 +63,15 @@ def _revoke_at_xero(org: Entity) -> None:
         logger.warning("Failed to revoke the Xero grant of entity %s: %s", org.id, exc)
 
 
-def invalidate_entity_xero_cache(entity_id, old_org_id) -> None:
-    """Drop every cached Xero object of ``old_org_id`` (inside the caller's transaction)."""
-    if not entity_id or not old_org_id:
-        return
-    EntityPettycashSettings.objects.filter(entity_id=entity_id).update(**dict.fromkeys(ORG_SCOPED_SETTINGS))
-    contacts = XeroContactSync.objects.filter(entity_id=entity_id, xero_org_id=str(old_org_id)).delete()[0]
-    accounts = AccountInfo.objects.filter(entity_id=entity_id).delete()[0]
-    bills = EntityBillAccountXero.objects.filter(entity_id=entity_id).delete()[0]
-    logger.info("Entity %s Xero cache cleared: %s contacts, %s account rows, %s bill accounts. Account and contact "
-                "mappings are now unset and must be re-selected.", entity_id, contacts, accounts, bills)
+def _mark(org: Entity, *, status: str, keep_org: bool) -> None:
+    """The company's own row (inside the caller's transaction)."""
+    changes = {"status": status, "connected_by_user_id": None}
+    if not keep_org:
+        changes["xero_org_id"] = None
+    Entity.objects.filter(id=org.id).update(**changes)
 
 
-def _disconnect(entity_id, *, status: str, clear_cache: bool) -> None:
+def _disconnect(entity_id, *, status: str, keep_org: bool) -> None:
     org = Entity.objects.filter(id=entity_id).first()
     if org is None:
         raise LookupError(f"no entity {entity_id}")
@@ -99,7 +85,7 @@ def _disconnect(entity_id, *, status: str, clear_cache: bool) -> None:
     with transaction.atomic():
         if connector is not None:
             still = (Entity.objects.filter(connected_by_user_id=connector.id, xero_org_id__isnull=False)
-                     .exclude(id=org.id).exists())
+                     .exclude(status="disconnected").exclude(id=org.id).exists())
             if still:
                 logger.info("Keeping the Xero tokens of user %s: still connected to other companies", connector.id)
             else:
@@ -107,18 +93,17 @@ def _disconnect(entity_id, *, status: str, clear_cache: bool) -> None:
                     access_token=None, access_token_obtained_at=None, access_token_expires_in=None,
                     refresh_token=None, id_token=None)
                 logger.info("Cleared the Xero tokens of user %s", connector.id)
-        if clear_cache:
-            invalidate_entity_xero_cache(org.id, org.xero_org_id)
-        Entity.objects.filter(id=org.id).update(status=status, xero_org_id=None, connected_by_user_id=None)
-    logger.info("Entity %s disconnected from Xero", entity_id)
+        _mark(org, status=status, keep_org=keep_org)
+    logger.info("Entity %s disconnected from Xero%s", entity_id,
+                f"; organisation {org.xero_org_id} and its copy kept" if keep_org and org.xero_org_id else "")
 
 
 def disconnect_entity_from_xero(entity_id) -> None:
-    """The one disconnect: the company ends ``disconnected`` with its Xero cache dropped."""
-    _disconnect(entity_id, status="disconnected", clear_cache=True)
+    """The one disconnect: the company ends ``disconnected``, keeping its organisation and its copy."""
+    _disconnect(entity_id, status="disconnected", keep_org=True)
 
 
 def disconnect_onboarding_entity(entity_id) -> None:
     """Onboarding's own Disconnect (owner, 2026-11-06: kept as Flask has it). The company stays in
-    ``onboarding``, and its synced Xero lists and mapping are kept."""
-    _disconnect(entity_id, status="onboarding", clear_cache=False)
+    ``onboarding`` with no organisation, and its synced Xero lists and mapping are kept."""
+    _disconnect(entity_id, status="onboarding", keep_org=False)
