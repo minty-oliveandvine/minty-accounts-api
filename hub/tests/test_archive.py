@@ -17,7 +17,6 @@ from hub.tests.test_public_and_transport import make_user, token
 from xero.services import tokens
 
 LIST = "/api/me/entities"
-ARCHIVE = "/api/me/company/archive"
 
 
 def archive(entity, by=None):
@@ -124,40 +123,63 @@ def test_no_xero_token_is_handed_out_for_an_archived_company(shop):
 # ---- archive ---------------------------------------------------------------------------------
 
 
-def test_an_admin_archives_their_company(shop):
-    resp = call("post", ARCHIVE, shop["admin"], shop["entity"].id)
+def archive_call(person, entity_id, method="post"):
+    return getattr(Client(), method)(f"/api/me/entities/{entity_id}/archive", HTTP_ORIGIN=WEB,
+                                     HTTP_AUTHORIZATION=f"Bearer {token(person.id)}")
+
+
+def test_a_superuser_archives_a_company(shop):
+    boss = superuser()
+    resp = archive_call(boss, shop["entity"].id)
     assert resp.status_code == 200 and "archived" in resp.json()["message"]
     row = Entity.objects.get(id=shop["entity"].id)
-    assert row.archived_at is not None and row.archived_by_user_id == shop["admin"].id
+    assert row.archived_at is not None and row.archived_by_user_id == boss.id
 
 
-def test_only_an_admin_may_archive(shop):
-    resp = call("post", ARCHIVE, shop["accountant"], shop["entity"].id)
+def test_an_admin_cannot_archive_their_own_company(shop):
+    resp = archive_call(shop["admin"], shop["entity"].id)
     assert resp.status_code == 403
     assert Entity.objects.get(id=shop["entity"].id).archived_at is None
 
 
+def test_the_old_company_address_is_gone(shop):
+    assert call("post", "/api/me/company/archive", superuser(), shop["entity"].id).status_code == 404
+
+
 def test_a_paid_subscription_blocks_the_archive(shop, facts):
     facts["value"] = {**facts["value"], "paid_modules": ["PETTY_CASH"]}
-    resp = call("post", ARCHIVE, shop["admin"], shop["entity"].id)
+    resp = archive_call(superuser(), shop["entity"].id)
     assert resp.status_code == 409 and "Cancel its subscription first" in resp.json()["error"]
     assert Entity.objects.get(id=shop["entity"].id).archived_at is None
 
 
 def test_a_trial_or_a_running_out_cancellation_does_not_block(shop, facts):
     facts["value"] = {**facts["value"], "billed_modules": ["PETTY_CASH"], "paid_modules": []}
-    assert call("post", ARCHIVE, shop["admin"], shop["entity"].id).status_code == 200
+    assert archive_call(superuser(), shop["entity"].id).status_code == 200
 
 
 def test_no_answer_from_billing_archives_nothing(shop, facts):
     facts["value"] = None
-    resp = call("post", ARCHIVE, shop["admin"], shop["entity"].id)
-    assert resp.status_code == 503
+    assert archive_call(superuser(), shop["entity"].id).status_code == 503
     assert Entity.objects.get(id=shop["entity"].id).archived_at is None
 
 
+def test_archiving_a_company_that_is_not_there_is_a_404(shop):
+    assert archive_call(superuser(), uuid.uuid4()).status_code == 404
+    assert archive_call(superuser("boss2@test.com"), "not-an-id").status_code == 404
+
+
+def test_archiving_twice_keeps_the_first_stamp(shop):
+    boss = superuser()
+    archive(shop["entity"], by=shop["admin"])
+    first = Entity.objects.get(id=shop["entity"].id).archived_at
+    assert archive_call(boss, shop["entity"].id).status_code == 200
+    row = Entity.objects.get(id=shop["entity"].id)
+    assert row.archived_at == first and row.archived_by_user_id == shop["admin"].id
+
+
 def test_archive_is_post_only(shop):
-    assert call("get", ARCHIVE, shop["admin"], shop["entity"].id).status_code == 405
+    assert archive_call(superuser(), shop["entity"].id, "get").status_code == 405
 
 
 # ---- restore ---------------------------------------------------------------------------------
@@ -191,5 +213,5 @@ def test_restore_is_post_only(shop):
 
 def test_an_older_billing_answer_without_paid_modules_archives_nothing(shop, facts):
     facts["value"] = {k: v for k, v in facts["value"].items() if k != "paid_modules"}
-    assert call("post", ARCHIVE, shop["admin"], shop["entity"].id).status_code == 503
+    assert archive_call(superuser(), shop["entity"].id).status_code == 503
     assert Entity.objects.get(id=shop["entity"].id).archived_at is None

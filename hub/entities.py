@@ -142,23 +142,63 @@ def my_entities(request: HttpRequest) -> HttpResponse:
                              "notices": read_notices(request.GET.get("flash"))})
 
 
-def restore_entity(request: HttpRequest, entity_id: str) -> HttpResponse:
-    """``POST /api/me/entities/<id>/restore``: a superuser brings an archived company back (owner,
-    2026-11-10: superusers only; admins never see an archived company). Clears ``archived_at`` and
-    ``archived_by_user_id``; restoring an active company changes nothing."""
+STILL_PAID = "This company still has a paid subscription. Cancel its subscription first, then archive it."
+NO_SUBSCRIPTION_ANSWER = ("I couldn't check this company's subscription just now, so nothing was changed. "
+                          "Mind trying again in a moment?")
+
+
+def _superuser_and_company(request: HttpRequest, entity_id: str, verb: str):
+    """``(early, user, org)``: POST, the door, a superuser (owner, 2026-11-10: only a superuser
+    archives or restores a company), and the company - archived or not - by id."""
     if request.method not in ("POST", "OPTIONS"):
-        return refuse(request, "Method not allowed", 405)
+        return refuse(request, "Method not allowed", 405), None, None
     early, user = guard(request)
     if early is not None:
-        return early
+        return early, None, None
     if not is_superuser(user):
-        return refuse(request, "Only Minty support can restore an archived company.", 403)
+        return refuse(request, f"Only Minty support can {verb} a company.", 403), None, None
     try:
         org = Entity.objects.filter(id=uuid.UUID(str(entity_id))).first()
     except ValueError:
         org = None
     if org is None:
-        return refuse(request, "I couldn't find that company.", 404)
+        return refuse(request, "I couldn't find that company.", 404), None, None
+    return None, user, org
+
+
+def archive_entity(request: HttpRequest, entity_id: str) -> HttpResponse:
+    """``POST /api/me/entities/<id>/archive``: a superuser archives a company (owner, 2026-11-10:
+    superusers only - it leaves every list but a superuser's and every door refuses it).
+
+    Refused while minty-subscription-api says a module is paid for (``paid_modules``: active or past
+    due); a trial, or a cancellation running out its paid time, does not block. No answer, or an
+    answer without ``paid_modules``, archives nothing. Archiving an archived company keeps its first
+    stamp."""
+    early, user, org = _superuser_and_company(request, entity_id, "archive")
+    if early is not None:
+        return early
+    try:
+        paid = subscription_client.entity_facts(str(org.id)).get("paid_modules")
+    except subscription_client.SubscriptionUnavailable:
+        return refuse(request, NO_SUBSCRIPTION_ANSWER, 503)
+    if paid is None:
+        logger.error("Archive: minty-subscription-api's facts for entity=%s carry no paid_modules", org.id)
+        return refuse(request, NO_SUBSCRIPTION_ANSWER, 503)
+    if paid:
+        return refuse(request, STILL_PAID, 409)
+    updated = Entity.objects.filter(id=org.id, archived_at__isnull=True).update(
+        archived_at=datetime.now(UTC), archived_by_user_id=user.id)
+    logger.info("Company archived entity=%s actor=%s updated=%s", org.id, user.id, updated)
+    return respond(request, {"message": f"\"{org.name}\" is archived."})
+
+
+def restore_entity(request: HttpRequest, entity_id: str) -> HttpResponse:
+    """``POST /api/me/entities/<id>/restore``: a superuser brings an archived company back (owner,
+    2026-11-10: superusers only, as archiving is). Clears ``archived_at`` and
+    ``archived_by_user_id``; restoring an active company changes nothing."""
+    early, user, org = _superuser_and_company(request, entity_id, "restore")
+    if early is not None:
+        return early
     Entity.objects.filter(id=org.id).update(archived_at=None, archived_by_user_id=None)
     logger.info("Company restored entity=%s actor=%s was_archived=%s", org.id, user.id, org.archived_at is not None)
     return respond(request, {"message": f"\"{org.name}\" is back for everyone who belongs to it."})

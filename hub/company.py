@@ -38,7 +38,7 @@ from minty_db.models import CountryInfo, CurrencyInfo, Entity, Invitation, User,
 from core import subscription_client
 from hub import invitations
 from hub.cash_settings import sync_cash_settings
-from hub.entities import _modules
+from hub.entities import NO_SUBSCRIPTION_ANSWER, _modules
 from hub.notices import read_conflict, read_notices
 from hub.policy import (
     Permission,
@@ -59,8 +59,6 @@ SAVE_FAILED = "That didn't quite save. Mind trying again?"
 NO_COMPANY = "You don't have access to that company."
 #: The roles a person may be given here, in the dropdown's order.
 ASSIGNABLE = ("admin", "accountant", "shop_manager", "cashier")
-NO_SUBSCRIPTION_ANSWER = ("I couldn't check this company's subscription just now, so nothing was changed. "
-                          "Mind trying again in a moment?")
 CONNECTIONS_URL = "https://api.xero.com/connections"
 
 
@@ -539,38 +537,3 @@ def company_xero_release(request: HttpRequest) -> HttpResponse:
                                "in use there. Mind trying again?", 502)
     logger.info("Xero released entity=%s for=%s actor=%s", release_id, entity_id, user.id)
     return respond(request, {"message": f"\"{other.name}\" is disconnected from Xero."})
-
-
-# ---- Archive (owner, 2026-11-10) ---------------------------------------------------------------
-
-STILL_PAID = "This company still has a paid subscription. Cancel its subscription first, then archive it."
-
-
-def company_archive(request: HttpRequest) -> HttpResponse:
-    """Archive the company: ``archived_at`` set, so it leaves every list but a superuser's and every
-    door refuses it (``entity_context``, ``handoffs._entity``). Admins only (``ENTITY_DELETE``).
-
-    Refused while minty-subscription-api says a module is paid for (``paid_modules``: active or past
-    due); a trial or a cancellation running out its paid time does not block. No answer, or an
-    answer without ``paid_modules``, archives nothing. Only a superuser restores
-    (``hub/entities.restore_entity``)."""
-    if request.method not in ("POST", "OPTIONS"):
-        return refuse(request, "Method not allowed", 405)
-    early, user, entity_id = _open(request, Permission.ENTITY_DELETE,
-                                   "Only an admin of this company can archive it.")
-    if early is not None:
-        return early
-    try:
-        paid = _facts(entity_id).get("paid_modules")
-    except Refusal as refusal:
-        return refuse(request, refusal.message, refusal.status)
-    if paid is None:
-        logger.error("Archive: minty-subscription-api's facts for entity=%s carry no paid_modules", entity_id)
-        return refuse(request, NO_SUBSCRIPTION_ANSWER, 503)
-    if paid:
-        return refuse(request, STILL_PAID, 409)
-    updated = Entity.objects.filter(id=entity_id, archived_at__isnull=True).update(
-        archived_at=timezone.now(), archived_by_user_id=user.id)
-    name = Entity.objects.filter(id=entity_id).values_list("name", flat=True).first() or "This company"
-    logger.info("Company archived entity=%s actor=%s updated=%s", entity_id, user.id, updated)
-    return respond(request, {"message": f"\"{name}\" is archived."})
