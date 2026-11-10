@@ -1,6 +1,6 @@
 # minty-accounts-api
 
-Minty's accounts service: Django 5.2 on Python 3.13, local port **8002**, at Flask's old public
+Minty's accounts service: Django 5.2 on Python 3.13, local port **8000**, at Flask's old public
 address (`accounts-api.dailyminty.com`). Sign-in by code and with Xero, the browser session and
 every hand-off into the apps, the hub's company and profile APIs, the onboarding routes, the Xero
 token service and the one Xero sync. It replaced Flask (`Minty`) in the Flask retirement
@@ -14,7 +14,7 @@ removed in Phase 7, so a path it does not route is a 404. What it serves:
 uv venv --python 3.13 .venv
 uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 copy .env.example .env      # then fill SECRET_KEY (the same as Flask's)
-.venv/Scripts/python.exe manage.py runserver 127.0.0.1:8002
+.venv/Scripts/python.exe manage.py runserver 127.0.0.1:8000
 ```
 
 `SUBSCRIPTION_API_URL` uses `127.0.0.1`, not `localhost` (Windows tries `::1` first and each call
