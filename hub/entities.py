@@ -8,7 +8,11 @@ company, entering those they hold no membership on read-only. Each entry: ``id``
 ``trial_modules`` / ``trial_module_names`` (on a free trial, among ``modules``),
 ``last_accessed_at`` (ISO, UTC), ``last_accessed_by``, ``role`` (the caller's own, or
 ``superadmin``), ``trial_ends_on`` (the earliest trial end, on the company's calendar) and
-``payment_failed``.
+``payment_failed``, and ``archived_at`` (ISO, UTC; ``None`` = active).
+
+Archived companies (``entities.archived_at``, owner 2026-11-10) are left out for everyone but a
+superuser, who sees them all and can narrow the list with ``?archived=all|active|archived``
+(default ``all``); the answer says ``is_superuser`` so minty-web knows to offer that filter.
 
 The trials and payment-failed flags are minty-subscription-api's answer
 (``core/subscription_client.attention``); when it can't answer quickly the list comes without
@@ -18,6 +22,7 @@ them (logged), never without the list. ``?flash=`` comes back as ``notices``.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -38,6 +43,8 @@ logger = logging.getLogger("minty-accounts-api")
 MODULE_CODES = ("PETTY_CASH", "PAYMENT_REQUEST")
 #: A company's calendar when it names no zone: Hong Kong, as the subscription emails date it.
 DEFAULT_ZONE = "Asia/Hong_Kong"
+#: A superuser's ``?archived=`` choices; everyone else only ever sees active companies.
+ARCHIVED_FILTERS = ("all", "active", "archived")
 
 
 def _modules(entity_ids: list) -> dict[str, set[str]]:
@@ -70,10 +77,13 @@ def _company_day(iso: str, zone_name: str | None) -> str:
     return instant.astimezone(zone).date().isoformat()
 
 
-def build_entity_list(user: User) -> list[dict]:
+def build_entity_list(user: User, archived: str = "all") -> list[dict]:
     query = Entity.objects.all()
     if not is_superuser(user):
-        query = query.filter(id__in=UserEntity.objects.filter(user_id=user.id).values("entity_id"))
+        query = query.filter(id__in=UserEntity.objects.filter(user_id=user.id).values("entity_id"),
+                             archived_at__isnull=True)
+    elif archived != "all":
+        query = query.filter(archived_at__isnull=archived == "active")
     rows = list(query.annotate(
         setup_first=Case(When(status="onboarding", then=Value(0)), default=Value(1), output_field=IntegerField()),
     ).order_by("setup_first", Field("last_accessed_at").desc(nulls_last=True)))
@@ -95,6 +105,7 @@ def build_entity_list(user: User) -> list[dict]:
         accessor = accessors.get(row.last_accessed_by_user_id)
         role = roles.get(row.id)
         last = row.last_accessed_at.astimezone(UTC) if row.last_accessed_at else None
+        gone = row.archived_at.astimezone(UTC) if row.archived_at else None
         entries.append({
             "id": str(row.id),
             "name": row.name,
@@ -109,6 +120,7 @@ def build_entity_list(user: User) -> list[dict]:
             "trial_ends_on": _company_day(min(trials.values(), key=datetime.fromisoformat), row.timezone)
             if trials else None,
             "payment_failed": bool(flags.get("payment_failed")),
+            "archived_at": gone.isoformat() if gone else None,
         })
     return entries
 
@@ -117,9 +129,36 @@ def my_entities(request: HttpRequest) -> HttpResponse:
     early, user = guard(request)
     if early is not None:
         return early
+    superuser = is_superuser(user)
+    archived = (request.GET.get("archived") or "all").strip().lower() if superuser else "all"
+    if archived not in ARCHIVED_FILTERS:
+        return refuse(request, "That list filter isn't one I know. Choose All, Active or Archived.", 422)
     try:
-        entities = build_entity_list(user)
+        entities = build_entity_list(user, archived)
     except Exception:
         logger.exception("Entity list API failed for user=%s", user.id)
         return refuse(request, "Your companies didn't load. Mind trying again?", 500)
-    return respond(request, {"entities": entities, "notices": read_notices(request.GET.get("flash"))})
+    return respond(request, {"entities": entities, "is_superuser": superuser,
+                             "notices": read_notices(request.GET.get("flash"))})
+
+
+def restore_entity(request: HttpRequest, entity_id: str) -> HttpResponse:
+    """``POST /api/me/entities/<id>/restore``: a superuser brings an archived company back (owner,
+    2026-11-10: superusers only; admins never see an archived company). Clears ``archived_at`` and
+    ``archived_by_user_id``; restoring an active company changes nothing."""
+    if request.method not in ("POST", "OPTIONS"):
+        return refuse(request, "Method not allowed", 405)
+    early, user = guard(request)
+    if early is not None:
+        return early
+    if not is_superuser(user):
+        return refuse(request, "Only Minty support can restore an archived company.", 403)
+    try:
+        org = Entity.objects.filter(id=uuid.UUID(str(entity_id))).first()
+    except ValueError:
+        org = None
+    if org is None:
+        return refuse(request, "I couldn't find that company.", 404)
+    Entity.objects.filter(id=org.id).update(archived_at=None, archived_by_user_id=None)
+    logger.info("Company restored entity=%s actor=%s was_archived=%s", org.id, user.id, org.archived_at is not None)
+    return respond(request, {"message": f"\"{org.name}\" is back for everyone who belongs to it."})

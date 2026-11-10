@@ -52,13 +52,13 @@ def initials(user: User) -> str:
 
 def entity_context(user: User, entity_id: str) -> dict | None:
     """The company a page was opened from - name, the person's role there, its modules - or None
-    when there is no such company or they may not see it. A superuser without a membership sees
-    it with no role."""
+    when there is no such company, it is archived (``archived_at``; superusers included), or they
+    may not see it. A superuser without a membership sees it with no role."""
     try:
         uuid.UUID(str(entity_id))
     except ValueError:
         return None
-    org = Entity.objects.filter(id=entity_id).first()
+    org = Entity.objects.filter(id=entity_id, archived_at__isnull=True).first()
     if org is None or not (is_superuser(user) or has_entity_access(user, str(org.id))):
         return None
     membership = UserEntity.objects.filter(user_id=user.id, entity_id=org.id).first()

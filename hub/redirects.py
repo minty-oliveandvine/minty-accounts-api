@@ -57,7 +57,7 @@ def _gate(request: HttpRequest, view: str, entity_id, *, permission: Permission 
     early, user = signed_in_or_door(request)
     if early is not None:
         return early, None
-    if not has_entity_access(user, str(entity_id)):
+    if not has_entity_access(user, str(entity_id)) or _entity(entity_id) is None:  # None: archived
         return _forbidden(request, NO_PERMISSION), None
     if permission is not None and not has_permission(user, permission, str(entity_id)):
         return _forbidden(request, denied), None

@@ -84,7 +84,7 @@ def test_an_entry_carries_every_field(db, catalogue, subscriptions):
     assert entry == {"id": str(entity.id), "name": "Acme", "status": "connected", "modules": ["PETTY_CASH"],
                      "trial_modules": [], "trial_module_names": [], "last_accessed_at": "2026-11-05T16:30:00+00:00",
                      "last_accessed_by": "Olive Owner", "role": "cashier", "trial_ends_on": None,
-                     "payment_failed": False}
+                     "payment_failed": False, "archived_at": None}
 
 
 def test_a_superuser_sees_every_company_and_reads_superadmin_where_not_a_member(db, catalogue, subscriptions):
@@ -139,7 +139,7 @@ def test_subscription_api_not_answering_leaves_the_list_without_badges(db, catal
 
 
 def test_a_person_with_no_company_gets_an_empty_list(db, subscriptions):
-    assert get(make_user()).json() == {"entities": [], "notices": []}
+    assert get(make_user()).json() == {"entities": [], "is_superuser": False, "notices": []}
     assert subscriptions["asked"] == []
 
 

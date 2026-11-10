@@ -17,6 +17,7 @@ fall-through is gone (2026-11-06), so a path not below is a 404, and Flask is no
 | `GET /api/me/entities`, `GET/PATCH /api/me/profile`, `GET /api/me/terms`, `POST /api/me/terms/accept`, `POST /api/me/contact` | Django (Phase 5B, `hub/`) |
 | `GET /api/me/company/users`, `PATCH/DELETE /api/me/company/users/<id>`, `POST /api/me/company/invitations`, `POST .../invitations/<id>/cancel` and `/resend`, `GET/PATCH /api/me/company/integration` | Django (Phase 5C, `hub/company.py`) |
 | `POST /api/me/company/xero/disconnect`, `POST /api/me/company/xero/release` | Django (Phase 5D, `hub/company.py`, `xero/services/disconnect.py`) |
+| `POST /api/me/company/archive`, `POST /api/me/entities/<id>/restore` | Django (2026-11-10, `hub/company.py`, `hub/entities.py`): archived companies, below |
 | `POST /api/onboarding/modules`, `GET/POST /api/onboarding/invite`, `POST /api/onboarding/invite/resend` and `/cancel`, `POST /api/onboarding/xero/disconnect` and `/release` | Django (Phase 5D, `hub/onboarding.py`) |
 | `GET /static/img/new_logo.png` | Django (Phase 5C): the invitation email's logo, the same file Flask serves |
 | `/`, `/index`, `/register`, `POST /auth/email/request-code`, `/verify-code`, `GET /auth/email/handoff`, `/invitation/accept/<token>` | Django (Phase 6B, `hub/email_signin.py`, `hub/front_door.py`) |
@@ -336,3 +337,29 @@ through until Phase 7 removes the fall-through.
 entity list, My Profile, Terms, Talk to Minty, and the company tabs with their membership guards and
 invitations). minty-subscription-api is faked at `core.subscription_client`; a root fixture blocks
 any real call to it. Mail goes to Django's in-memory outbox.
+
+## Archived companies (owner, 2026-11-10)
+
+`entities.archived_at` (with `archived_by_user_id`) archives a company. It is a column, not a
+`status` value, because the Xero code rewrites `status` (connect, disconnect, the settings page's
+sync) and the Xero-optional CONTRACT rebuilds it as `('onboarding','live')`.
+
+- **The list.** `GET /api/me/entities` leaves archived companies out for everyone but a superuser.
+  A superuser gets them all, each with `archived_at`, and can narrow the list with
+  `?archived=all|active|archived` (default `all`; anything else is a 422). Every answer says
+  `is_superuser`, so minty-web knows when to offer the filter.
+- **The doors.** An archived company is "no such company" everywhere, superusers included:
+  `entity_context` (every `/api/me/company/*` tab and the Petty Cash hand-off), `handoffs._entity`
+  (the module chooser, Payment Requests, minty-web and the address redirects), `redirects._gate`,
+  invitations (none made; an open one can't be accepted and stays pending), onboarding's Xero
+  routes, the Xero connect's company lookup, and `resolve_entity_access_token` (no Xero token for
+  the other APIs).
+- **Archive.** `POST /api/me/company/archive?entity=<id>`, admins only (`ENTITY_DELETE`). It is
+  refused (409, "This company still has a paid subscription. Cancel its subscription first, then
+  archive it.") while minty-subscription-api's `entity_facts` lists any `paid_modules` (active or
+  past due). A trial, or a cancellation running out its paid time, doesn't block. No answer, or an
+  answer without `paid_modules`, archives nothing (503).
+- **Restore.** `POST /api/me/entities/<id>/restore`, superusers only (403 otherwise; 404 for no
+  such company). It clears both columns.
+- The other APIs refuse archived companies at their own doors; the v2→v3 load carries the old
+  app's `status = 'deleted'` as `archived_at`.

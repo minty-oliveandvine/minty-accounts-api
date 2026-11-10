@@ -311,10 +311,10 @@ def _resolve_connect_entity(entity_id: str, user: User | None, from_onboarding: 
     nothing is connected."""
     if entity_id:
         known = _uuid_text(entity_id)
-        return Entity.objects.filter(id=known).first() if known else None
+        return Entity.objects.filter(id=known, archived_at__isnull=True).first() if known else None
     if from_onboarding and user is not None:
         owned = Entity.objects.filter(id__in=UserEntity.objects.filter(user_id=user.id).values("entity_id"),
-                                      status="onboarding")
+                                      status="onboarding", archived_at__isnull=True)
         if name := (entity_name or "").strip():
             if (by_name := owned.filter(name=name).order_by("-created_at").first()) is not None:
                 return by_name
@@ -728,7 +728,7 @@ def _reconnect(request: HttpRequest, code, error, entity_id: str, state_initiato
                     flash(request, RECONNECT_FAILED, "danger")
                     return _settings_tab(entity_id)
                 known = _uuid_text(entity_id)
-                entity = Entity.objects.filter(id=known).first() if known else None
+                entity = Entity.objects.filter(id=known, archived_at__isnull=True).first() if known else None
                 if entity is None:
                     raise LookupError(f"no entity {entity_id!r} to reconnect")
                 old_org = entity.xero_org_id

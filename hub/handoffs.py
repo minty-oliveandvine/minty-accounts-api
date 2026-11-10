@@ -234,8 +234,9 @@ def _signed_in_get(request: HttpRequest) -> tuple[HttpResponse | None, User | No
 
 
 def _entity(raw) -> Entity | None:
+    """The company, or None when there is none or it is archived (no hand-off ever reaches one)."""
     try:
-        return Entity.objects.filter(id=uuid.UUID(str(raw))).first()
+        return Entity.objects.filter(id=uuid.UUID(str(raw)), archived_at__isnull=True).first()
     except ValueError:
         return None
 

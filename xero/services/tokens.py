@@ -132,7 +132,10 @@ def store_refreshed(row: UserToken, bundle: dict) -> None:
 def resolve_entity_access_token(entity_id: uuid.UUID) -> tuple[str, str] | None:
     """``(access_token, xero_org_id)`` for the company, refreshed when it is about to expire, or
     ``None`` (logged) when a person has to reconnect or another refresh did not finish in time."""
-    entity = Entity.objects.filter(id=entity_id).values("xero_org_id", "connected_by_user_id").first()
+    entity = Entity.objects.filter(id=entity_id).values("xero_org_id", "connected_by_user_id", "archived_at").first()
+    if entity and entity["archived_at"] is not None:
+        logger.info("xero token: entity %s is archived; no token", entity_id)
+        return None
     if not entity or not entity["xero_org_id"]:
         logger.info("xero token: entity %s has no Xero org linked", entity_id)
         return None

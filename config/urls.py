@@ -40,6 +40,7 @@ urlpatterns = [
     path("legal/invite-terms-status", public.invite_terms_status, name="invite_terms_status"),
     # Phase 5B: the hub's own routes (bearer, hub CORS).
     path("api/me/entities", entities.my_entities, name="my_entities"),
+    path("api/me/entities/<str:entity_id>/restore", entities.restore_entity, name="restore_entity"),
     path("api/me/profile", profile.my_profile, name="my_profile"),
     path("api/me/terms", terms.terms_status, name="terms_status"),
     path("api/me/terms/accept", terms.terms_accept, name="terms_accept"),
@@ -53,6 +54,7 @@ urlpatterns = [
     path("api/me/company/integration", company.company_integration, name="company_integration"),
     path("api/me/company/xero/disconnect", company.company_xero_disconnect, name="company_xero_disconnect"),
     path("api/me/company/xero/release", company.company_xero_release, name="company_xero_release"),
+    path("api/me/company/archive", company.company_archive, name="company_archive"),
     # Phase 5D: the onboarding wizard's routes minty-onboarding-api and minty-subscription-api forward to.
     path("api/onboarding/modules", onboarding.onboarding_modules, name="onboarding_modules"),
     path("api/onboarding/invite", onboarding.onboarding_invite, name="onboarding_invite"),

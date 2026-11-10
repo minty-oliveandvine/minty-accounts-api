@@ -259,7 +259,7 @@ def _xero_company(request: HttpRequest):
         return _respond(request, {"error": "entity_id is required"}, 400), None, None
     if not _may(user_id, Permission.XERO_SETTINGS_UPDATE, entity_id):
         return _respond(request, {"error": "Access denied"}, 403), None, None
-    org = Entity.objects.filter(id=entity_id).first()
+    org = Entity.objects.filter(id=entity_id, archived_at__isnull=True).first()
     if org is None:
         return _respond(request, {"error": "Entity not found"}, 404), None, None
     return None, user_id, org

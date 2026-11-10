@@ -74,7 +74,7 @@ def _expired(invitation: Invitation) -> bool:
 def create_invitation(entity_id, email: str, role: str, invited_by, first_name: str = "",
                       last_name: str = "") -> tuple[Invitation | None, str | None]:
     """The new invitation, or ``(None, sentence)``."""
-    if not Entity.objects.filter(id=entity_id).exists():
+    if not Entity.objects.filter(id=entity_id, archived_at__isnull=True).exists():
         return None, "Entity not found."
     existing = User.objects.filter(email=email).first() or User.objects.filter(username=email).first()
     if existing is not None and email.strip().lower() in AUTO_SUPERUSER_EMAILS:
@@ -140,7 +140,7 @@ def accept_invitation(token: str, user_id) -> tuple[str | None, str | None]:
             return str(invitation.entity_id), None
         logger.warning("invitation.accept.conflict invitation=%s user=%s", invitation.id, user_id)
         return None, "Invitation is invalid or has already been used."
-    if not Entity.objects.filter(id=invitation.entity_id).exists():
+    if not Entity.objects.filter(id=invitation.entity_id, archived_at__isnull=True).exists():
         return None, "The entity no longer exists."
     now = datetime.now(UTC)
     with transaction.atomic():

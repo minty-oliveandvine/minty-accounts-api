@@ -17,7 +17,8 @@ from hub.tests.test_public_and_transport import make_user
 @pytest.fixture
 def facts(monkeypatch):
     """What minty-subscription-api says about the company; ``None`` = it can't answer."""
-    answer = {"value": {"payer": None, "payers": [], "pending_transfer_to": None, "billed_modules": []}}
+    answer = {"value": {"payer": None, "payers": [], "pending_transfer_to": None, "billed_modules": [],
+                       "paid_modules": []}}
 
     def entity_facts(entity_id):
         if answer["value"] is None:

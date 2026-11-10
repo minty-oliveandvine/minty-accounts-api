@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, quote, urlsplit
 
 import jwt
@@ -212,6 +213,17 @@ def test_someone_outside_the_company_is_sent_back_to_the_list(shop):
     resp = login(Client(), shop["stranger"]).get(f"/entity/{shop['entity'].id}/modules", follow=False)
     assert resp.status_code == 308  # canonical first
     assert login(Client(), shop["stranger"]).get(resp["Location"])["Location"] == "/entity"
+
+
+def test_an_archived_company_gets_no_token_anywhere(shop):
+    shop["modules"]("PETTY_CASH", "PAYMENT_REQUEST")
+    Entity.objects.filter(id=shop["entity"].id).update(archived_at=datetime.now(UTC))
+    client = login(Client(), shop["owner"])
+    resp = client.get("/handoff/petty-cash-web", {"entity_id": str(shop["entity"].id)})
+    assert resp["Location"] == "/entity" and "token=" not in resp["Location"]
+    for page in ("modules", "payment-request", "petty-cash"):
+        resp = client.get(f"/entity/{ref(shop['entity'])}/{page}")
+        assert resp.status_code in (302, 404) and "token=" not in resp.get("Location", "")
 
 
 def test_the_payment_request_hand_off_and_its_request_segment(shop):
