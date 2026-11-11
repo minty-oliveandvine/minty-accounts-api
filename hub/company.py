@@ -50,6 +50,7 @@ from hub.policy import (
 from hub.profile import entity_context, initials
 from hub.rules import invite_address_error, role_label
 from hub.transport import guard, refuse, respond
+from xero.services import matching
 from xero.services.disconnect import disconnect_entity_from_xero
 from xero.services.tokens import resolve_entity_access_token
 
@@ -342,7 +343,8 @@ def _sync_connection(org: Entity, access_token: str) -> None:
         listed = any(c.get("tenantId") == str(org.xero_org_id) for c in response.json() or [])
     except (ValueError, AttributeError):
         return
-    if listed and org.status != "connected":
+    if listed and org.status != "connected" and not matching.pending(org):
+        # Matching (Settings Phase 2): the company stays disconnected until Finish and its suppliers.
         Entity.objects.filter(id=org.id).update(status="connected", last_connected_at=timezone.now())
     elif not listed and org.status != "disconnected":
         Entity.objects.filter(id=org.id).update(status="disconnected")
@@ -389,6 +391,10 @@ def _integration_page(user: User, entity_id: str) -> dict:
         },
         "can_edit": has_permission(user, Permission.XERO_SETTINGS_UPDATE, entity_id),
         "can_rename": has_permission(user, Permission.ENTITY_RENAME, entity_id),
+        # Settings Phase 2: a Minty company's connect matches its accounts first (SET-1b, frame 3).
+        "setup_mode": org.setup_mode,
+        "own_accounts": matching.own_accounts(org.id).count() if org.setup_mode == "minty" else 0,
+        "matching": {"accounts": matching.accounts_pending(org), "contacts": matching.contacts_pending(org)},
     }
 
 

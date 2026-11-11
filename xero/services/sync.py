@@ -8,11 +8,13 @@ Ported from Flask's ``entity/services/settings.py``: ``sync_xero_accounts_to_db`
 ``xero/services/integration.py``'s two fetches. Flask asked Xero for the same ACTIVE accounts three
 times each time Petty Cash Settings opened; this asks once and does all of it:
 
-- ``account_info`` matches Xero's ACTIVE accounts: new ones added, returning ones re-activated,
-  renamed or recoded ones refreshed (a type Petty Cash's chart excludes keeps its old name, as in
-  Flask), and any that Xero no longer has ACTIVE deleted (which cascades their
-  ``entity_account_xero`` rows and clears the Petty Cash mapping that named them). A stale
-  ARCHIVED row always goes.
+- ``account_info`` matches Xero's ACTIVE accounts: new ones added, returning ones re-activated
+  (an ARCHIVED row Xero has again comes back), renamed or recoded ones refreshed (a type Petty
+  Cash's chart excludes keeps its old name, as in Flask). One Xero no longer has ACTIVE is deleted
+  only when nothing uses it (``usage.used_account_ids``) and Minty didn't make it; otherwise it is
+  ARCHIVED and kept, with every expense line, daily-closing account and sales method still pointing
+  at it (2026-11-11: deleting set them NULL). A row with no Xero id - Minty's own - is never
+  touched.
 - ``entity_account_xero`` (Petty Cash's code list) gains a row per eligible account; the ticks
   (``is_active``) are never changed here.
 - ``entity_bill_account_xero`` (Payment Requests' list) likewise, and loses rows whose account is gone.
@@ -48,12 +50,16 @@ from minty_db.models import (
     XeroContactSync,
 )
 
+from xero.services import usage
+
 logger = logging.getLogger("minty-accounts-api")
 
 TIMEOUT = (10, 60)
 CONTACTS_PAGE = 1000
 #: Types Petty Cash's chart never shows (Flask's ``COA_EXCLUDED_TYPES``): their names aren't refreshed.
 COA_EXCLUDED_TYPES = frozenset({"BANK", "EQUITY", "OTHERINCOME", "SALES", "REVENUE"})
+#: ``account_info.source`` of a row Minty made (Auto Fill, or added by a person): never deleted here.
+MINTY_MADE = ("template", "user")
 #: Petty Cash's code list (``COA_INCLUDED_TYPES``) and Payment Requests' (``BILL_COA_INCLUDED_TYPES``).
 COA_INCLUDED_TYPES = frozenset({"DIRECTCOSTS", "EXPENSE", "OVERHEADS", "PREPAYMENT"})
 BILL_COA_INCLUDED_TYPES = frozenset({"DIRECTCOSTS", "EXPENSE", "FIXED", "OVERHEADS", "PREPAYMENT"})
@@ -127,19 +133,27 @@ def _status(account: dict) -> str:
 
 def apply_accounts(entity_id, accounts: list[dict], org) -> dict:
     """Make the company's account tables match Xero's ACTIVE ``accounts`` (non-empty)."""
-    counts = {"added": 0, "activated": 0, "refreshed": 0, "deleted": 0}
+    counts = {"added": 0, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0}
     with transaction.atomic():
         lock(entity_id)
         snapshot = {a["AccountID"]: a for a in accounts if a.get("AccountID")}
         rows = list(AccountInfo.objects.filter(entity_id=entity_id))
+        used = usage.used_account_ids(entity_id)
         kept = {}
         for row in rows:
-            if row.status == "ARCHIVED" or (row.xero_account_id and row.xero_account_id not in snapshot):
-                row.delete()
-                counts["deleted"] += 1
+            if not row.xero_account_id:
+                continue  # Minty's own account (or one combined away): the sync never touches it
+            if row.xero_account_id not in snapshot:
+                if row.id in used or row.source in MINTY_MADE:
+                    if row.status != "ARCHIVED":
+                        row.status = "ARCHIVED"
+                        row.save(update_fields=["status"])
+                        counts["archived"] += 1
+                else:
+                    row.delete()
+                    counts["deleted"] += 1
                 continue
-            if row.xero_account_id:
-                kept[row.xero_account_id] = row
+            kept[row.xero_account_id] = row
         for account_id, account in snapshot.items():
             row = kept.get(account_id)
             if row is None:
@@ -238,7 +252,8 @@ def _mirror_petty_cash(entity_id, org) -> None:
 
 def _mirror_bills(entity_id) -> None:
     """Every bill-eligible account has an ``entity_bill_account_xero`` row (``is_active`` and
-    ``is_deleted`` untouched); rows whose account is gone are deleted."""
+    ``is_deleted`` untouched); a row naming a Xero account that is gone is deleted. A row with no Xero
+    id - a code added by hand, or a Minty company's own account - is never touched."""
     existing = {b.xero_account_id: b for b in EntityBillAccountXero.objects.filter(entity_id=entity_id)}
     for account in AccountInfo.objects.filter(entity_id=entity_id, type__in=BILL_COA_INCLUDED_TYPES,
                                               xero_account_id__isnull=False):
@@ -253,8 +268,10 @@ def _mirror_bills(entity_id) -> None:
             row.account_code, row.account_name, row.account_type = code, account.name or "", account.type or ""
             row.save(update_fields=["account_code", "account_name", "account_type"])
     if AccountInfo.objects.filter(entity_id=entity_id).exists():  # never wipe on a transiently empty table
-        live = AccountInfo.objects.filter(entity_id=entity_id).values_list("xero_account_id", flat=True)
-        EntityBillAccountXero.objects.filter(entity_id=entity_id).exclude(xero_account_id__in=live).delete()
+        live = [x for x in AccountInfo.objects.filter(entity_id=entity_id).values_list("xero_account_id", flat=True)
+                if x]
+        EntityBillAccountXero.objects.filter(entity_id=entity_id).exclude(xero_account_id__isnull=True).exclude(
+            xero_account_id="").exclude(xero_account_id__in=live).delete()
 
 
 def apply_contacts(entity_id, contacts: list[dict], org) -> dict:

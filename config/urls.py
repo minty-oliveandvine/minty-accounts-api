@@ -17,6 +17,7 @@ from hub import (
     public,
     redirects,
     terms,
+    xero_matching,
     xero_oauth,
 )
 from xero.views import internal_xero_access_token, internal_xero_sync
@@ -55,6 +56,14 @@ urlpatterns = [
     path("api/me/company/integration", company.company_integration, name="company_integration"),
     path("api/me/company/xero/disconnect", company.company_xero_disconnect, name="company_xero_disconnect"),
     path("api/me/company/xero/release", company.company_xero_release, name="company_xero_release"),
+    # Settings Phase 2 (2026-11-11): matching a Minty company's accounts to Xero on connect.
+    path("api/me/company/xero/matching", xero_matching.company_xero_matching, name="company_xero_matching"),
+    path("api/me/company/xero/matching/refresh", xero_matching.company_xero_matching_refresh,
+         name="company_xero_matching_refresh"),
+    path("api/me/company/xero/matching/finish", xero_matching.company_xero_matching_finish,
+         name="company_xero_matching_finish"),
+    path("api/me/company/xero/matching/contacts", xero_matching.company_xero_matching_contacts,
+         name="company_xero_matching_contacts"),
     # Phase 5D: the onboarding wizard's routes minty-onboarding-api and minty-subscription-api forward to.
     path("api/onboarding/modules", onboarding.onboarding_modules, name="onboarding_modules"),
     path("api/onboarding/invite", onboarding.onboarding_invite, name="onboarding_invite"),
@@ -90,6 +99,8 @@ urlpatterns = [
     # Phase 6E: addresses that only send a person on.
     path("entity/<entity:entity_id>/settings/general", redirects.settings_general, name="settings_general"),
     path("entity/<entity:entity_id>/settings/integration", redirects.settings_integration, name="settings_integration"),
+    path("entity/<entity:entity_id>/settings/integration/match", redirects.settings_integration_match,
+         name="settings_integration_match"),
     path("entity/<entity:entity_id>/settings/users", redirects.settings_users, name="settings_users"),
     path("entity/<entity:entity_id>/settings/petty-cash", redirects.settings_petty_cash, name="settings_petty_cash"),
     path("entity/<entity:entity_id>/settings/modules", redirects.settings_modules, name="settings_modules"),

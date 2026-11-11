@@ -39,7 +39,7 @@ from django.db.models import Q
 from django.utils import timezone
 from minty_db.models import AccountInfo, Entity, User, UserToken, XeroContactSync
 
-from xero.services import sync
+from xero.services import sync, usage
 from xero.services.tokens import TOKEN_URL, XERO_TIMEOUT, refresh_lock, resolve_entity_access_token
 
 logger = logging.getLogger("minty-accounts-api")
@@ -347,9 +347,16 @@ def mirror_on_connect(entity_id, access_token, tenant_id) -> None:
                          entity_id, tenant_id)
             raise MirrorFailed("no chart of accounts")
         sync.lock(entity_id)
-        unmatched = AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__isnull=True).delete()[0]
-        contacts_removed = XeroContactSync.objects.filter(entity_id=entity_id).filter(
-            Q(xero_org_id__isnull=True) | ~Q(xero_org_id=str(tenant_id))).delete()[0]
+        # Only leftovers nothing uses: a row Minty made (a Minty company matches instead, in
+        # matching.py) or one an expense, a bill, daily closing or a sales method names is kept
+        # (2026-11-11 - this used to delete every account and supplier with no Xero id).
+        unmatched = (AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__isnull=True)
+                     .exclude(source__in=sync.MINTY_MADE).exclude(id__in=usage.used_account_ids(entity_id))
+                     .delete()[0])
+        contacts_removed = (XeroContactSync.objects.filter(entity_id=entity_id)
+                            .filter(Q(xero_org_id__isnull=True) | ~Q(xero_org_id=str(tenant_id)))
+                            .exclude(source__in=sync.MINTY_MADE).exclude(id__in=usage.used_contact_ids(entity_id))
+                            .delete()[0])
         counts = sync.apply_accounts(entity_id, accounts, tenant_id)
     except MirrorFailed:
         raise
@@ -379,8 +386,11 @@ def background_sync(entity_id, access_token, tenant_id) -> None:
                 sync.lock(entity_id)
                 removed = 0
                 if fetched:
-                    removed = XeroContactSync.objects.filter(entity_id=entity_id).exclude(
-                        xero_contact_id__in=fetched).delete()[0]
+                    # Only a Xero contact nothing uses: a supplier Minty made has no Xero id, and one an
+                    # expense, a bill or daily closing names stays (2026-11-11).
+                    removed = (XeroContactSync.objects.filter(entity_id=entity_id, xero_contact_id__isnull=False)
+                               .exclude(xero_contact_id="").exclude(xero_contact_id__in=fetched)
+                               .exclude(id__in=usage.used_contact_ids(entity_id)).delete()[0])
                 counts = sync.apply_contacts(entity_id, contacts, tenant_id)
             logger.info("Contact sync entity %s: %s, %s no longer in Xero removed", entity_id, counts, removed)
     except Exception:

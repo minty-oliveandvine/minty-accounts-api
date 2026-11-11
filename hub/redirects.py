@@ -89,6 +89,14 @@ def settings_integration(request: HttpRequest, entity_id) -> HttpResponse:
     return early or _to_hub_tab(request, user, entity_id, "integration")
 
 
+def settings_integration_match(request: HttpRequest, entity_id) -> HttpResponse:
+    """Match your accounts to Xero (Settings Phase 2, 2026-11-11): where a Minty company's connect
+    lands, and where Integration's Continue goes."""
+    early, user = _gate(request, "settings_integration_match", entity_id, permission=Permission.XERO_SETTINGS_VIEW,
+                        denied="You do not have permission to view Xero settings for this entity.")
+    return early or _to_hub_tab(request, user, entity_id, "integration/match")
+
+
 def settings_general(request: HttpRequest, entity_id) -> HttpResponse:
     """The company's name, country and currency - the hub's General tab (2026-11-10). It reads the
     same page model as Integration, so the same permission opens it."""

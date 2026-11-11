@@ -51,7 +51,7 @@ from hub.links import handoff_origin, hub_login_url
 from hub.notices import sign_conflict
 from hub.policy import Permission, has_entity_access, has_permission
 from hub.session import drain_flashes, flash, safe_internal_path, safe_next, sign_in
-from xero.services import connect
+from xero.services import connect, matching
 from xero.services.connect import MirrorFailed, normalize_email
 from xero.services.tokens import resolve_entity_access_token
 
@@ -361,22 +361,38 @@ def start_background_sync(entity_id, access_token, tenant_id, what: str) -> None
 
 
 def _record(entity: Entity, user: User, grant: connect.Grant, tenant_id, tenant_name, fy_end, *,
-            status: str | None) -> None:
+            status: str | None) -> bool:
     """The connection, in ONE transaction: the mirror, the company's organisation, name, year end,
     status (None keeps it: mid-onboarding), last connection and connector, and the connector's new
     tokens. ``MirrorFailed`` (no chart) rolls all of it back; so does any other failure, which
-    propagates."""
+    propagates.
+
+    A company that keeps its books in Minty, with its own accounts, is NOT mirrored (that deleted
+    them): matching begins instead (``xero/services/matching.py``) - the Xero copies and the
+    automatic picks - and the company stays as it was (disconnected) until Finish. True then."""
+    begins_matching = matching.needs_matching(entity)
     with transaction.atomic():
-        connect.mirror_on_connect(entity.id, grant.access_token, tenant_id)
+        if begins_matching:
+            matching.begin(entity.id, grant.access_token, tenant_id)
+        else:
+            connect.mirror_on_connect(entity.id, grant.access_token, tenant_id)
         values = {"xero_org_id": tenant_id, "xero_tenant_name": tenant_name,
                   "financial_year_end_day": fy_end[0], "financial_year_end_month": fy_end[1],
                   "last_connected_at": timezone.now(), "connected_by_user_id": user.id}
-        if status is not None:
+        if status is not None and not begins_matching:
             values["status"] = status
         Entity.objects.filter(id=entity.id).update(**values)
         connect.store_bundle(user, grant.bundle)
     for field, value in values.items():
         setattr(entity, field, value)
+    return begins_matching
+
+
+def _to_matching(request: HttpRequest, entity_id) -> HttpResponse:
+    """Signed in to Xero; now the accounts are matched (frame 3)."""
+    drain_flashes(request)
+    flash(request, "Signed in to Xero. Now tell Minty where each of your accounts belongs in Xero.", "success")
+    return HttpResponseRedirect(company_path(entity_id, "settings/integration/match"))
 
 
 # ---- the callback -------------------------------------------------------------------------------
@@ -625,11 +641,14 @@ def _connect(request: HttpRequest, code, error, from_onboarding: bool, entity_id
             return failed()
         try:
             # Mid-onboarding the status stays "onboarding" (only finalize clears it).
-            _record(entity, user, grant, tenant_id, curr_conn[0].get("tenantName"), fy_end,
-                    status=None if from_onboarding else "connected")
+            begins_matching = _record(entity, user, grant, tenant_id, curr_conn[0].get("tenantName"), fy_end,
+                                      status=None if from_onboarding else "connected")
         except MirrorFailed:
             connect.revoke_new_grant(grant.access_token, curr_conn, tenant_id)
             return failed()
+        if begins_matching and not from_onboarding:
+            _login(request, user)
+            return _to_matching(request, entity.id)
         start_background_sync(entity.id, grant.access_token, tenant_id, "Entity Connect")
         _login(request, user)
         flash(request, "Connected to Xero! I'm pulling in your accounts and contacts now.", "success")
@@ -733,12 +752,14 @@ def _reconnect(request: HttpRequest, code, error, entity_id: str, state_initiato
                     raise LookupError(f"no entity {entity_id!r} to reconnect")
                 old_org = entity.xero_org_id
                 try:
-                    _record(entity, user, grant, tenant_id, curr_conn[0].get("tenantName"), fy_end,
-                            status="connected")
+                    begins_matching = _record(entity, user, grant, tenant_id, curr_conn[0].get("tenantName"),
+                                              fy_end, status="connected")
                 except MirrorFailed:
                     connect.revoke_new_grant(grant.access_token, curr_conn, tenant_id)
                     flash(request, RECONNECT_FAILED, "danger")
                     return _settings_tab(entity_id)
+                if begins_matching:
+                    return _to_matching(request, entity.id)
                 if not old_org or str(old_org) != str(tenant_id):
                     logger.info("Entity %s xero_org_id update: %s -> %s", entity_id, old_org, tenant_id)
                 start_background_sync(entity.id, grant.access_token, tenant_id, "Entity Reconnect")

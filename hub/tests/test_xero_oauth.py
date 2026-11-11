@@ -945,3 +945,29 @@ def test_the_sync_thread_carries_the_log_context_and_closes_its_connection(monke
     monkeypatch.setattr(connect.connection, "close", lambda: closed.append(True))
     target(*args)
     assert ran == [("e-1", "tok", "t-1")] and closed == [True]
+
+
+# ---- a Minty company's connect matches instead of mirroring (Settings Phase 2, 2026-11-11) -----------
+
+
+def test_a_minty_companys_connect_keeps_every_account_and_goes_to_matching(shop, xero):
+    """It used to delete every account with no Xero id - all of a Minty company's own - and every
+    supplier with no organisation. Now nothing is deleted: the organisation is recorded, the company
+    stays disconnected, and the person lands on the matching page."""
+    from minty_db.models import AccountMatchDraft
+
+    entity = shop["entity"]
+    Entity.objects.filter(id=entity.id).update(setup_mode="minty", status="disconnected")
+    own = AccountInfo.objects.create(entity_id=entity.id, type="EXPENSE", account_type="expense", name="Rent",
+                                     code="400", xero_code="400", status="ACTIVE", source="template")
+    supplier = XeroContactSync.objects.create(entity_id=entity.id, name="ABC Supplies", source="user")
+    client = signed_in(shop["owner"])
+
+    resp = callback(client, connect_flow(client, entity))
+
+    assert resp["Location"].endswith("/settings/integration/match")
+    company = fresh(entity)
+    assert (company.xero_org_id, company.status, company.setup_mode) == ("t-1", "disconnected", "minty")
+    assert AccountInfo.objects.filter(id=own.id, xero_account_id__isnull=True).exists()
+    assert XeroContactSync.objects.filter(id=supplier.id).exists()
+    assert AccountMatchDraft.objects.filter(account_id=own.id).exists(), "400 = 400, same type: picked"

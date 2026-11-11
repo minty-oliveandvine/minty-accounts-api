@@ -389,3 +389,49 @@ sync) and the Xero-optional CONTRACT rebuilds it as `('onboarding','live')`.
   such company). It clears both columns.
 - The other APIs refuse archived companies at their own doors; the v2→v3 load carries the old
   app's `status = 'deleted'` as `archived_at`.
+
+## Matching a Minty company's accounts to Xero (Settings Phase 2, 2026-11-11)
+
+The design is Minty's `docs/modernisation/xero_optional_database.md` §4 (decisions 5/5a/6/9/12/13/18);
+Figma 353:999's SET-1b and frames 3, 3b, 4, 5 are the look. Before this, a connect's mirror deleted every
+account with no Xero id (a Minty company's whole chart, the Petty Cash/Bank/Director rows included) and
+every supplier with no organisation, leaving expenses, daily-closing accounts and sales methods
+pointing at nothing.
+
+- **Connect** (`hub/xero_oauth.py` `_record`): a company with `setup_mode = 'minty'` and its own accounts
+  is not mirrored. `matching.begin` fills only the Xero copies (`xero_account` / `xero_contact`) and the
+  automatic picks (same code AND type, `account_match_draft.picked_by` NULL); the organisation is
+  recorded, the company stays `disconnected` and `minty`, and the person lands on the hub's
+  `/settings/integration/match` (accounts-api's `settings_integration_match` redirect). No background
+  sync yet; `_sync_connection` never marks such a company connected (`matching.pending`).
+- **The page** (`hub/xero_matching.py` over `xero/services/matching.py`, `XERO_SETTINGS_VIEW` to read,
+  `XERO_SETTINGS_UPDATE` otherwise): `GET /api/me/company/xero/matching` (rows by group, each with its
+  pick, a suggestion - a bank by its number, else the same type with a similar name - a same-code
+  other-type conflict, whether a record uses it), `PUT` `{account_id, xero_account_id | null}` (one pick,
+  saved at once; a bank only to a bank, else the same class), `POST .../refresh` (Xero's accounts again),
+  `POST .../finish`, `POST .../contacts`.
+- **Used** (`xero/services/usage.py`, owner 2026-11-11, extending the doc's Q8): an expense line, a bill
+  line (by id, or by code on an older line), any daily-closing account, a sales method, or an account
+  combined into it.
+- **Finish = the replace**, one transaction: 409 while a used account has no pick (or a pick names a
+  Xero account that is gone, or one already linked here); accounts picked to one Xero account combined
+  (survivor: Xero's code, else most records, else oldest; expenses, bill lines, daily closing, sales
+  methods, `account_module`, `entity_account_xero` re-pointed; the others archived with
+  `merged_into_id`); each picked account takes Xero's identity IN PLACE (Xero id, code, name, type, link)
+  so every reference stays, gets a Petty Cash module row if it had none (X2/X3's tick), and its bill code
+  and unpublished bill lines follow a new code; unused unmatched accounts archived (never deleted); all
+  logged in `account_change_log` (one batch); drafts deleted; `setup_mode = 'xero'` and
+  `xero_publish_from` = today (Hong Kong; owner: only records from then on go to Xero).
+- **Suppliers** (after the replace commits): each own supplier linked to the Xero contact of its name
+  (case and surrounding spaces ignored; the active one first, else the first by Xero id - the doc's Q9
+  default), else created in Xero under its Minty name; one already stored here is merged into it.
+  Logged in `contact_change_log`. Any Xero refuses are named; the company stays disconnected until
+  `POST .../contacts` gets them all through, then it is `connected` and the first sync starts.
+- **The sync never deletes what is used or Minty-made** (also 2026-11-11): `sync.apply_accounts`
+  archives a used (or Minty-made) account Xero dropped and leaves rows with no Xero id alone;
+  `_mirror_bills` keeps bill codes with no Xero id; the connect's contact clean-up and
+  `mirror_on_connect` only remove unused, Xero-made leftovers.
+- Not built (Phase 3): matching on a reconnect with accounts added while disconnected, a different
+  organisation, a stale match refused at publish. Tests: `hub/tests/test_xero_matching.py`,
+  `test_xero_oauth.py` (`test_a_minty_companys_connect_keeps_every_account_and_goes_to_matching`),
+  `xero/tests/test_sync.py` (the archive-not-delete cases); Postgres only.
