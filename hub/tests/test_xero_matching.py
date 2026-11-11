@@ -293,3 +293,46 @@ def test_petty_cash_and_the_bank_cant_become_one_xero_account(minty):
     resp = call("post", BASE + "/finish", minty["admin"], minty["entity"].id)
     assert (resp.status_code, resp.json()["error"]) == (409, matching.SAME_BANK)
     assert Entity.objects.get(id=minty["entity"].id).setup_mode == "minty"
+
+
+def test_a_sync_while_matching_only_refreshes_the_copies(minty, xero):
+    """Petty Cash Settings asks for a sync: it must not import Xero's chart as accounts beside the
+    company's own (they would hold the Xero ids Finish links)."""
+    from xero.services import sync
+
+    sync.sync_company(minty["entity"].id, "tok", ORG)
+    assert not AccountInfo.objects.filter(entity_id=minty["entity"].id, xero_account_id__isnull=False).exists()
+    assert not XeroContactSync.objects.filter(entity_id=minty["entity"].id, xero_contact_id__isnull=False).exists()
+
+
+def test_finish_folds_an_unused_xero_row_that_holds_a_picked_account(minty):
+    """A sync from before this guard left Xero's chart as rows: an unused one holding a picked Xero
+    account is removed, not a reason to refuse."""
+    AccountInfo.objects.create(entity_id=minty["entity"].id, name="Petty Cash", type="BANK", xero_code="090",
+                               xero_account_id="x-pc", status="ACTIVE", source="xero")
+    _match_everything_used(minty)
+    resp = call("post", BASE + "/finish", minty["admin"], minty["entity"].id)
+    assert resp.status_code == 200, resp.content
+    rows = AccountInfo.objects.filter(entity_id=minty["entity"].id, xero_account_id="x-pc")
+    assert list(rows.values_list("id", flat=True)) == [minty["petty"].id], "the company's own row carries it"
+
+
+def test_a_disconnect_after_matching_keeps_the_xero_codes(minty, xero):
+    """Owner, 2026-11-12: disconnected, the company's accounts keep their Xero (matched) codes and
+    names - nothing reverts to the Minty codes; only removing an account takes it away."""
+    from xero.services.disconnect import disconnect_entity_from_xero
+
+    _match_everything_used(minty)
+    assert call("post", BASE + "/finish", minty["admin"], minty["entity"].id).status_code == 200
+    rent_before = AccountInfo.objects.get(id=minty["rent"].id)
+
+    disconnect_entity_from_xero(minty["entity"].id)
+
+    entity = Entity.objects.get(id=minty["entity"].id)
+    assert (entity.status, entity.setup_mode, entity.xero_org_id) == ("disconnected", "xero", ORG)
+    for row, code, name in (("petty", "090", "Petty Cash"), ("sales", "200", "Sales"), ("rent", "469", "Rent")):
+        account = AccountInfo.objects.get(id=minty[row].id)
+        assert (account.xero_code, account.code, account.name, account.record_status) == (code, code, name,
+                                                                                          "active"), row
+    assert AccountInfo.objects.get(id=minty["rent"].id).xero_account_id == rent_before.xero_account_id
+    assert not AccountInfo.objects.filter(entity_id=entity.id, code="1000").exists(), "no Minty code comes back"

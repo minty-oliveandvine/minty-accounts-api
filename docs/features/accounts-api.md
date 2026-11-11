@@ -436,3 +436,7 @@ pointing at nothing.
   organisation, a stale match refused at publish. Tests: `hub/tests/test_xero_matching.py`,
   `test_xero_oauth.py` (`test_a_minty_companys_connect_keeps_every_account_and_goes_to_matching`),
   `xero/tests/test_sync.py` (the archive-not-delete cases); Postgres only.
+- **While matching** (`setup_mode` still `minty`), `sync.sync_company` - the sync every app asks for -
+  refreshes only the Xero copies: importing Xero's chart as accounts put rows beside the company's own
+  holding the Xero ids Finish links. Finish removes an unused Xero-made row that holds a picked Xero
+  account (one a sync made before this) instead of refusing; a used one still refuses.

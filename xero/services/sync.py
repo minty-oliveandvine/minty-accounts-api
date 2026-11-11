@@ -331,6 +331,21 @@ def sync_company(entity_id, access_token: str, org) -> dict:
     could not be asked (nothing changed)."""
     accounts = fetch_active_accounts(access_token, org)
     contacts = fetch_contacts(access_token, org)
+    from minty_db.models import Entity
+
+    if Entity.objects.filter(id=entity_id, setup_mode="minty").exists():
+        # Still Minty's books - its accounts are being matched (Settings Phase 2, 2026-11-11): only the
+        # Xero copies are refreshed. Importing Xero's chart as accounts would put rows beside the
+        # company's own holding the very Xero ids matching's Finish links.
+        with transaction.atomic():
+            lock(entity_id)
+            if accounts:
+                _copy_accounts(entity_id, {a["AccountID"]: a for a in accounts if a.get("AccountID")}, org)
+            if contacts:
+                _copy_contacts(entity_id, contacts, org)
+        logger.info("xero sync: company %s is matching its accounts; only the Xero copies refreshed", entity_id)
+        return {"accounts": {"copied": len(accounts or [])} if accounts else None,
+                "contacts": {"copied": len(contacts)} if contacts is not None else None}
     return {
         "accounts": apply_accounts(entity_id, accounts, org) if accounts else None,
         "contacts": apply_contacts(entity_id, contacts, org) if contacts is not None else None,

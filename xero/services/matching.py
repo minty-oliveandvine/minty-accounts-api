@@ -491,11 +491,19 @@ def finish(entity_id, user_id) -> dict:
             id__in=[d.xero_account_id for d in drafts.values()])}
         if any(d.xero_account_id not in copies for d in drafts.values()):
             raise Refused(PICK_GONE)
-        held = set(AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__in=[
-            c.xero_guid for c in copies.values()]).values_list("xero_account_id", flat=True))
-        if held:
+        held = list(AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__in=[
+            c.xero_guid for c in copies.values()]))
+        if any(row.id in used for row in held):
             raise Refused("A Xero account you picked is already linked to another account here. Refresh from "
                           "Xero and pick again.")
+        if held:
+            # Xero-made rows nothing uses (a sync imported the chart before matching finished): the
+            # company's own account takes the Xero account, so these go, with their old-reader rows.
+            guids = [row.xero_account_id for row in held]
+            EntityBillAccountXero.objects.filter(entity_id=entity_id, xero_account_id__in=guids).delete()
+            AccountInfo.objects.filter(id__in=[row.id for row in held]).delete()
+            logger.info("xero matching: company %s - %s unused Xero-made row(s) removed for its own accounts",
+                        entity_id, len(held))
         batch = uuid.uuid4()
         by_copy: dict = {}
         for account in accounts:
