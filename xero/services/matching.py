@@ -105,6 +105,12 @@ NOT_OWN = "That account isn't one to match. Reload the page and try again."
 WRONG_KIND = "That Xero account can't be used for this one. Choose one from the list."
 NO_TOKEN = "Xero needs to be connected again. Sign in to Xero once more to carry on."
 CONTACTS_UNANSWERED = "Xero didn't send your contacts just now. Mind trying again in a moment?"
+#: Daily closing moves cash from the float to the bank: they are two accounts (onboarding's
+#: accounting.SAME_BANK), so they never share a Xero account - combining would make them one.
+SAME_BANK = (
+    "Petty cash and the bank you deposit into can't be the same Xero account. "
+    "Choose a different one for each."
+)
 
 
 class Refused(Exception):
@@ -326,6 +332,19 @@ def _pending_entity(entity_id) -> Entity:
     return entity
 
 
+def _cash_and_bank(entity_id) -> set:
+    """Daily closing's petty cash and bank accounts (the pair that must stay two accounts)."""
+    row = EntityPettycashSettings.objects.filter(entity_id=entity_id).values(
+        "pettycash_account_id", "bank_account_id").first()
+    return {v for v in (row or {}).values() if v}
+
+
+def _shares_cash_and_bank(entity_id, drafts: dict) -> bool:
+    pair = _cash_and_bank(entity_id)
+    picked = [drafts[a].xero_account_id for a in pair if a in drafts]
+    return len(pair) == 2 and len(picked) == 2 and picked[0] == picked[1]
+
+
 def pick(entity_id, account_id, xero_account_id, user_id) -> dict:
     """Save (or, with no Xero account, clear) one account's pick."""
     entity = _pending_entity(entity_id)
@@ -339,6 +358,10 @@ def pick(entity_id, account_id, xero_account_id, user_id) -> dict:
                                               xero_org_id=str(entity.xero_org_id), status="ACTIVE").first()
             if copy is None or not _fits(_minty_type(account), copy):
                 raise Refused(WRONG_KIND, 400)
+            pair = _cash_and_bank(entity_id)
+            if account.id in pair and AccountMatchDraft.objects.filter(
+                    account_id__in=pair - {account.id}, xero_account_id=copy.id).exists():
+                raise Refused(SAME_BANK, 400)
             AccountMatchDraft.objects.create(account_id=account.id, entity_id=entity_id, xero_account_id=copy.id,
                                              picked_by=user_id)
     return read(entity)
@@ -461,6 +484,8 @@ def finish(entity_id, user_id) -> dict:
         unmatched_used = [a for a in accounts if a.id in used and a.id not in drafts]
         if unmatched_used:
             raise Refused(USED_UNMATCHED.format(n=len(unmatched_used)))
+        if _shares_cash_and_bank(entity_id, drafts):
+            raise Refused(SAME_BANK)
         copies = {c.id: c for c in XeroAccount.objects.filter(
             entity_id=entity_id, xero_org_id=str(entity.xero_org_id), status="ACTIVE",
             id__in=[d.xero_account_id for d in drafts.values()])}

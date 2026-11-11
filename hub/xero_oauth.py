@@ -389,9 +389,9 @@ def _record(entity: Entity, user: User, grant: connect.Grant, tenant_id, tenant_
 
 
 def _to_matching(request: HttpRequest, entity_id) -> HttpResponse:
-    """Signed in to Xero; now the accounts are matched (frame 3)."""
+    """Signed in to Xero; now the accounts are matched (frame 3). No notice: the page's own heading
+    says what to do, and it reads no ``?flash=`` (one queued here only lengthened its address)."""
     drain_flashes(request)
-    flash(request, "Signed in to Xero. Now tell Minty where each of your accounts belongs in Xero.", "success")
     return HttpResponseRedirect(company_path(entity_id, "settings/integration/match"))
 
 

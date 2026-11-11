@@ -137,7 +137,7 @@ def _copy(guid):
 
 
 def _pick(m, row, guid):
-    return call("put", BASE, m["admin"], m["entity"].id,
+    return call("patch", BASE, m["admin"], m["entity"].id,
                 {"account_id": str(m[row].id), "xero_account_id": str(_copy(guid).id) if guid else None})
 
 
@@ -170,6 +170,15 @@ def test_a_connect_picks_same_code_and_type_only_and_reads_the_page(minty):
 def test_a_cashier_can_read_but_not_pick(minty):
     assert call("get", BASE, minty["cashier"], minty["entity"].id).status_code in (200, 403)
     assert _pick({**minty, "admin": minty["cashier"]}, "bank", "x-bank").status_code == 403
+
+
+def test_every_matching_method_is_one_a_browser_may_send(minty):
+    """The page runs in minty-web: a method the hub's CORS answer leaves out is never sent (the pick
+    was a PUT, and the browser refused it before it reached here)."""
+    from hub.transport import METHODS
+
+    for method in ("GET", "PATCH", "POST"):
+        assert method in METHODS
 
 
 def test_a_pick_must_fit(minty):
@@ -266,3 +275,21 @@ def test_the_integration_page_says_matching_is_pending(minty):
     page = call("get", "/api/me/company/integration", minty["admin"], minty["entity"].id).json()
     assert page["setup_mode"] == "minty" and page["own_accounts"] == 9
     assert page["matching"] == {"accounts": True, "contacts": False}
+
+
+def test_petty_cash_and_the_bank_cant_become_one_xero_account(minty):
+    """Daily closing moves cash from the float to the bank: combined, both would be one account
+    (onboarding's rule too - accounting.SAME_BANK)."""
+    assert _pick(minty, "petty", "x-pc").status_code == 200
+    resp = _pick(minty, "bank", "x-pc")
+    assert (resp.status_code, resp.json()["error"]) == (400, matching.SAME_BANK)
+    assert not AccountMatchDraft.objects.filter(account_id=minty["bank"].id).exists()
+
+    # a draft that got there anyway (an older page) is refused at Finish, nothing written
+    AccountMatchDraft.objects.create(account_id=minty["bank"].id, entity_id=minty["entity"].id,
+                                     xero_account_id=_copy("x-pc").id, picked_by=None)
+    for row, guid in (("wages_ft", "x-wages"), ("wages_pt", "x-wages"), ("sales", "x-sales"), ("director", "x-dir")):
+        _pick(minty, row, guid)
+    resp = call("post", BASE + "/finish", minty["admin"], minty["entity"].id)
+    assert (resp.status_code, resp.json()["error"]) == (409, matching.SAME_BANK)
+    assert Entity.objects.get(id=minty["entity"].id).setup_mode == "minty"

@@ -6,8 +6,9 @@ Each is the hub's door plus ``?entity=`` and a permission, as the Integration ta
 ``XERO_SETTINGS_UPDATE``. Refusals are ``{"error": <sentence>}`` with the service's status.
 
 - ``GET  /api/me/company/xero/matching``: the page.
-- ``PUT  /api/me/company/xero/matching`` ``{account_id, xero_account_id | null}``: one pick (saved at
-  once, so the page can be finished later).
+- ``PATCH /api/me/company/xero/matching`` ``{account_id, xero_account_id | null}``: one pick (saved at
+  once, so the page can be finished later). PATCH, not PUT: the hub's CORS answer
+  (``hub/transport.py`` ``METHODS``) allows no PUT, so a browser never sent one.
 - ``POST /api/me/company/xero/matching/refresh``: Xero's accounts read again.
 - ``POST /api/me/company/xero/matching/finish``: the replace, then the suppliers; answers
   ``{connected, failed_contacts}`` with the page.
@@ -55,7 +56,7 @@ def _finish_suppliers(request: HttpRequest, user, entity_id) -> HttpResponse:
 
 
 def company_xero_matching(request: HttpRequest) -> HttpResponse:
-    if request.method == "PUT":
+    if request.method == "PATCH":
         early, user, entity_id = _open(request, Permission.XERO_SETTINGS_UPDATE, NO_EDIT)
         if early is not None:
             return early

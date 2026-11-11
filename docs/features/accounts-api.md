@@ -407,8 +407,9 @@ pointing at nothing.
 - **The page** (`hub/xero_matching.py` over `xero/services/matching.py`, `XERO_SETTINGS_VIEW` to read,
   `XERO_SETTINGS_UPDATE` otherwise): `GET /api/me/company/xero/matching` (rows by group, each with its
   pick, a suggestion - a bank by its number, else the same type with a similar name - a same-code
-  other-type conflict, whether a record uses it), `PUT` `{account_id, xero_account_id | null}` (one pick,
-  saved at once; a bank only to a bank, else the same class), `POST .../refresh` (Xero's accounts again),
+  other-type conflict, whether a record uses it), `PATCH` `{account_id, xero_account_id | null}` (one pick;
+  saved at once; a bank only to a bank, else the same class; daily closing's petty cash and bank never
+  one Xero account - refused here and at Finish, `matching.SAME_BANK`), `POST .../refresh` (Xero's accounts again),
   `POST .../finish`, `POST .../contacts`.
 - **Used** (`xero/services/usage.py`, owner 2026-11-11, extending the doc's Q8): an expense line, a bill
   line (by id, or by code on an older line), any daily-closing account, a sales method, or an account
