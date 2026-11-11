@@ -2,9 +2,9 @@
 
 "Used" is the owner's definition (2026-11-11, extending ``Minty/docs/modernisation/
 xero_optional_database.md`` Q8): an account is used when an expense line, a bill line (by id, or by
-code on a line saved before ``bill_line.account_id``), any of daily closing's accounts
-(``entity_pettycash_settings``), or a sales method (``entity_sale_setting.account_id``) points at it,
-or another account was combined into it (``merged_into_id``). The sync archives a used account Xero
+code on a line saved before ``bill_line.account_id``) or any of daily closing's accounts
+(``entity_pettycash_settings``) points at it, or another account was combined into it
+(``merged_into_id``). Sales methods name no account (the link was withdrawn 2026-11-11, owner). The sync archives a used account Xero
 dropped instead of deleting it; matching (``matching.py``) requires a used account to be matched.
 
 A contact is used when an expense line, a bill, or daily closing's contacts point at it.
@@ -17,7 +17,6 @@ from minty_db.models import (
     Bill,
     BillLine,
     EntityPettycashSettings,
-    EntitySaleSetting,
     ReportExpense,
 )
 
@@ -47,10 +46,6 @@ def used_account_ids(entity_id) -> set:
     settings = EntityPettycashSettings.objects.filter(entity_id=entity_id).values(*ACCOUNT_SLOTS).first()
     if settings:
         used |= {v for v in settings.values() if v}
-    used |= set(
-        EntitySaleSetting.objects.filter(entity_id=entity_id, account_id__isnull=False)
-        .values_list("account_id", flat=True)
-    )
     used |= set(
         AccountInfo.objects.filter(entity_id=entity_id, merged_into_id__isnull=False)
         .values_list("merged_into_id", flat=True)

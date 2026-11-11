@@ -412,8 +412,8 @@ pointing at nothing.
   one Xero account - refused here and at Finish, `matching.SAME_BANK`), `POST .../refresh` (Xero's accounts again),
   `POST .../finish`, `POST .../contacts`.
 - **Used** (`xero/services/usage.py`, owner 2026-11-11, extending the doc's Q8): an expense line, a bill
-  line (by id, or by code on an older line), any daily-closing account, a sales method, or an account
-  combined into it.
+  line (by id, or by code on an older line), any daily-closing account, or an account combined into it.
+  (A sales method named an account for a day, minty-db's unreleased v0.6; withdrawn the same day.)
 - **Finish = the replace**, one transaction: 409 while a used account has no pick (or a pick names a
   Xero account that is gone, or one already linked here); accounts picked to one Xero account combined
   (survivor: Xero's code, else most records, else oldest; expenses, bill lines, daily closing, sales

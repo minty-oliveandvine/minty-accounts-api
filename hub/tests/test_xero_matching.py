@@ -27,8 +27,6 @@ from minty_db.models import (
     Entity,
     EntityBillAccountXero,
     EntityPettycashSettings,
-    EntitySaleSetting,
-    SaleInfo,
     XeroAccount,
     XeroContactSync,
 )
@@ -103,7 +101,8 @@ def own(entity, code, name, xero_type, minty_type, **extra):
 
 @pytest.fixture
 def minty(shop, xero):
-    """Olive & Vine keeping its books in Minty: its own chart, daily closing set, a sales method."""
+    """Olive & Vine keeping its books in Minty: its own chart and daily closing set (Cash Sales
+    included)."""
     entity = shop["entity"]
     Entity.objects.filter(id=entity.id).update(setup_mode="minty")
     rows = {
@@ -120,9 +119,8 @@ def minty(shop, xero):
     EntityPettycashSettings.objects.create(entity_id=entity.id, pettycash_account_id=rows["petty"].id,
                                            discrepancy_bank_account_id=rows["petty"].id,
                                            bank_account_id=rows["bank"].id, director_account_id=rows["director"].id,
-                                           discrepancy_account_id=rows["wages_pt"].id)
-    sale = SaleInfo.objects.create(sale_name="Online Sales Matching", value_name="online_m", type="electronic")
-    EntitySaleSetting.objects.create(entity_id=entity.id, sale=sale, account_id=rows["sales"].id)
+                                           discrepancy_account_id=rows["wages_pt"].id,
+                                           cash_sale_account_id=rows["sales"].id)
     EntityBillAccountXero.objects.create(entity_id=entity.id, account_code="6001", account_name="Salaries - Full Time",
                                          account_type="EXPENSE", xero_account_id="", is_active=True)
     entity.refresh_from_db()
@@ -159,7 +157,7 @@ def test_a_connect_picks_same_code_and_type_only_and_reads_the_page(minty):
     assert rows["Rent"]["pick"]["auto"] is True
     assert rows["Cleaning Expense"]["conflict"] == {"code": "420", "name": "Cleaning"}
     assert rows["Bank Account"]["suggestion"] == str(_copy("x-bank").id), "a bank by its number"
-    assert rows["Online Sales"]["used"] is True, "a sales method names it (owner, 2026-11-11)"
+    assert rows["Online Sales"]["used"] is True, "daily closing's cash sale account"
     assert rows["Salaries - Part Time"]["used"] is True, "daily closing's discrepancy account"
     assert rows["Licences"]["used"] is False
     assert body["will_archive"] == ["Cleaning Expense", "Licences", "Salaries - Full Time"]
@@ -223,7 +221,7 @@ def test_finish_links_in_place_combines_archives_and_logs(minty, xero):
 
     sales = AccountInfo.objects.get(id=minty["sales"].id)
     assert (sales.xero_account_id, sales.xero_code) == ("x-sales", "200")
-    assert EntitySaleSetting.objects.get(entity_id=entity.id, account_id=sales.id)
+    assert settings.cash_sale_account_id == sales.id
     assert AccountModule.objects.get(account_id=sales.id, module_code="PETTY_CASH").is_active
 
     full, part = AccountInfo.objects.get(id=minty["wages_ft"].id), AccountInfo.objects.get(id=minty["wages_pt"].id)

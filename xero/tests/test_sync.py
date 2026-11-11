@@ -311,19 +311,6 @@ def test_a_used_account_xero_dropped_is_archived_not_deleted(company, xero):
     assert travel.status == "ACTIVE", "Xero has it again: the same row comes back"
 
 
-def test_an_account_a_sales_method_names_is_used(company, xero):
-    from minty_db.models import EntitySaleSetting, SaleInfo
-
-    xero.accounts = [acct("a-1", "429", "General"), acct("a-s", "200", "Online Sales", "REVENUE")]
-    _run(company)
-    sale = SaleInfo.objects.create(sale_name="Online Sales Phase2", value_name="online_p2", type="electronic")
-    EntitySaleSetting.objects.create(entity_id=company.id, sale=sale, account_id=_accounts(company)["a-s"].id)
-    xero.accounts = [acct("a-1", "429", "General")]
-
-    assert _run(company)["accounts"]["archived"] == 1
-    assert _accounts(company)["a-s"].status == "ARCHIVED"
-
-
 def test_a_minty_account_and_a_hand_added_bill_code_are_never_touched(company, xero):
     own = AccountInfo.objects.create(entity_id=company.id, name="Rent", code="420", xero_code="420",
                                      account_type="expense", type="EXPENSE", status="ACTIVE", source="user")

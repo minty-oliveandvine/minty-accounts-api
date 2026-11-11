@@ -53,7 +53,6 @@ from minty_db.models import (
     EntityAccountXero,
     EntityBillAccountXero,
     EntityPettycashSettings,
-    EntitySaleSetting,
     ReportExpense,
     XeroAccount,
     XeroContact,
@@ -412,11 +411,6 @@ def _combine(entity_id, survivor: AccountInfo, others: list[AccountInfo], batch,
     for column in usage.ACCOUNT_SLOTS:
         EntityPettycashSettings.objects.filter(entity_id=entity_id, **{f"{column}__in": ids}).update(
             **{column: survivor.id})
-    survivor_link = EntitySaleSetting.objects.filter(entity_id=entity_id, account_id=survivor.id).exists()
-    for link in EntitySaleSetting.objects.filter(entity_id=entity_id, account_id__in=ids):
-        target = None if survivor_link else survivor.id
-        EntitySaleSetting.objects.filter(entity_id=entity_id, sale_id=link.sale_id).update(account_id=target)
-        survivor_link = True
     for module in AccountModule.objects.filter(account_id__in=ids):
         mine = AccountModule.objects.filter(account_id=survivor.id, module_code=module.module_code).first()
         if mine is None:
