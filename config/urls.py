@@ -46,7 +46,7 @@ urlpatterns = [
     path("api/me/terms", terms.terms_status, name="terms_status"),
     path("api/me/terms/accept", terms.terms_accept, name="terms_accept"),
     path("api/me/contact", contact.my_contact, name="my_contact"),
-    # Phase 5C: a company's Users and Entity & Integration tabs.
+    # Phase 5C: a company's Users, General and Integration tabs (General split out 2026-11-10).
     path("api/me/company/users", company.company_users, name="company_users"),
     path("api/me/company/users/<str:member_id>", company.company_member, name="company_member"),
     path("api/me/company/invitations", company.company_invite, name="company_invite"),
@@ -88,6 +88,7 @@ urlpatterns = [
     path("logout", handoffs.logout, name="logout"),
     path("leave-entity", handoffs.leave_entity, name="leave_entity"),
     # Phase 6E: addresses that only send a person on.
+    path("entity/<entity:entity_id>/settings/general", redirects.settings_general, name="settings_general"),
     path("entity/<entity:entity_id>/settings/integration", redirects.settings_integration, name="settings_integration"),
     path("entity/<entity:entity_id>/settings/users", redirects.settings_users, name="settings_users"),
     path("entity/<entity:entity_id>/settings/petty-cash", redirects.settings_petty_cash, name="settings_petty_cash"),

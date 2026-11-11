@@ -35,7 +35,6 @@ from hub.handoffs import (
     minty_web_company_path,
     minty_web_landing_url,
     module_enabled,
-    payment_request_landing_url,
 )
 from hub.notices import sign_notices
 from hub.policy import Permission, has_entity_access, has_permission
@@ -90,6 +89,14 @@ def settings_integration(request: HttpRequest, entity_id) -> HttpResponse:
     return early or _to_hub_tab(request, user, entity_id, "integration")
 
 
+def settings_general(request: HttpRequest, entity_id) -> HttpResponse:
+    """The company's name, country and currency - the hub's General tab (2026-11-10). It reads the
+    same page model as Integration, so the same permission opens it."""
+    early, user = _gate(request, "settings_general", entity_id, permission=Permission.XERO_SETTINGS_VIEW,
+                        denied="You do not have permission to view this entity's settings.")
+    return early or _to_hub_tab(request, user, entity_id, "general")
+
+
 def settings_users(request: HttpRequest, entity_id) -> HttpResponse:
     early, user = _gate(request, "settings_users", entity_id, permission=Permission.USER_VIEW_ALL,
                         denied="You do not have permission to view all users for this entity.")
@@ -97,13 +104,11 @@ def settings_users(request: HttpRequest, entity_id) -> HttpResponse:
 
 
 def settings_petty_cash(request: HttpRequest, entity_id) -> HttpResponse:
-    early, _user = _gate(request, "settings_petty_cash", entity_id, permission=Permission.COA_VIEW,
-                         denied="You do not have permission to view CoA settings for this entity.",
-                         module=MODULE_PETTY_CASH, module_off="Petty Cash is not activated for this entity.")
-    if early is not None:
-        return early
-    query = urlencode({"entity_id": str(entity_id), "next": minty_web_company_path(entity_id, "/settings/petty-cash")})
-    return HttpResponseRedirect(f"/handoff/petty-cash-web?{query}")
+    """Petty Cash Settings - a hub tab since 2026-11-10 (owner), no longer the Petty Cash app's page."""
+    early, user = _gate(request, "settings_petty_cash", entity_id, permission=Permission.COA_VIEW,
+                        denied="You do not have permission to view CoA settings for this entity.",
+                        module=MODULE_PETTY_CASH, module_off="Petty Cash is not activated for this entity.")
+    return early or _to_hub_tab(request, user, entity_id, "petty-cash")
 
 
 def settings_modules(request: HttpRequest, entity_id) -> HttpResponse:
@@ -117,10 +122,9 @@ def settings_modules(request: HttpRequest, entity_id) -> HttpResponse:
 
 
 def settings_payment_request(request: HttpRequest, entity_id) -> HttpResponse:
+    """Payment Settings - the hub's ``payment`` tab since 2026-11-10 (owner); this old address stays."""
     early, user = _gate(request, "settings_payment_request", entity_id)
-    if early is not None:
-        return early
-    return HttpResponseRedirect(payment_request_landing_url(request, _org(entity_id), user, "settings/payment-request"))
+    return early or _to_hub_tab(request, user, entity_id, "payment")
 
 
 def report_history(request: HttpRequest, entity_id) -> HttpResponse:

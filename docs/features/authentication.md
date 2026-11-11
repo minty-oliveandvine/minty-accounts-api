@@ -198,9 +198,10 @@ The short id decides; the name is only for reading (`hub/addresses.py`):
   | Address | Goes to |
   |---|---|
   | `/entity/<co>/petty-cash` (the bare `/entity/<co>` 308s there), `/entity/<co>/petty-cash/reports` (query kept) | minty-petty-cash-web's dashboard and `/reports`, through `/handoff/petty-cash-web` |
-  | `/entity/<co>/settings/users`, `/integration`, `/modules` | minty-web's settings tabs |
-  | `/entity/<co>/settings/petty-cash` | minty-petty-cash-web's `/settings/petty-cash`, through the same hand-off |
-  | `/entity/<co>/settings/payment-request`, `/entity/<co>/payment-request` | the payments app |
+  | `/entity/<co>/settings/users`, `/general`, `/integration`, `/modules` | minty-web's settings tabs |
+  | `/entity/<co>/settings/petty-cash` | minty-web's Petty Cash Settings tab (`/settings/petty-cash`; in the hub since 2026-11-10, owner) |
+  | `/entity/<co>/settings/payment-request` | minty-web's Payment Settings tab (`/settings/payment`; in the hub since 2026-11-10, owner) |
+  | `/entity/<co>/payment-request` | the payments app |
   | `/entity/<co>/enter`, `/xero-not-connected` | the return from an app; the integration tab |
 
   `hub/handoffs.py` and `hub/redirects.py` keep Flask's guards: signed in, a member (or

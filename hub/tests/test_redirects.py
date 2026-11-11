@@ -24,7 +24,7 @@ def co(shop):
     return f"/entity/{ref(shop['entity'])}"
 
 
-@pytest.mark.parametrize("tab", ["users", "integration"])
+@pytest.mark.parametrize("tab", ["users", "general", "integration"])
 def test_the_hub_tabs_hand_over_with_what_was_flashed_and_a_refused_connect(shop, tab):
     client = login(Client(), shop["owner"])
     client.get("/handoff/petty-cash-web", {"entity_id": str(uuid.uuid4())})  # flashes "no permission"
@@ -42,22 +42,25 @@ def test_a_cashier_may_not_open_the_users_tab_and_a_stranger_no_tab(shop):
     UserEntity.objects.create(user_id=cashier.id, entity_id=shop["entity"].id, role="cashier", approved=True)
     assert login(Client(), cashier).get(f"{co(shop)}/settings/users")["Location"] == "/entity"
     assert login(Client(), shop["stranger"]).get(f"{co(shop)}/settings/integration")["Location"] == "/entity"
+    assert login(Client(), shop["stranger"]).get(f"{co(shop)}/settings/general")["Location"] == "/entity"
 
 
-def test_petty_cash_settings_hand_over_to_the_app_and_need_petty_cash(shop):
+def test_petty_cash_settings_hand_over_to_the_hub_tab_and_need_petty_cash(shop):
+    # Petty Cash Settings is a hub tab since 2026-11-10 (owner), no longer the Petty Cash app's page.
     client = login(Client(), shop["owner"])
-    target = urlsplit(client.get(f"{co(shop)}/settings/petty-cash")["Location"])
-    assert target.path == "/handoff/petty-cash-web"
-    assert parse_qs(target.query)["next"] == [f"{co(shop)}/settings/petty-cash"]
+    query = landing(client.get(f"{co(shop)}/settings/petty-cash"), HUB)
+    assert query["next"] == [f"{co(shop)}/settings/petty-cash"]
+    assert claims(query)["entity_id"] == str(shop["entity"].id)
     shop["modules"]()
     assert client.get(f"{co(shop)}/settings/petty-cash")["Location"] == "/entity"
 
 
-def test_the_modules_and_payment_request_tabs(shop):
+def test_the_modules_and_payment_settings_tabs(shop):
     client = login(Client(), shop["owner"])
     assert landing(client.get(f"{co(shop)}/settings/modules"), HUB)["next"] == [f"{co(shop)}/settings/modules"]
-    assert landing(client.get(f"{co(shop)}/settings/payment-request"), PAY)["next"] == [
-        f"{co(shop)}/settings/payment-request"]
+    # Payment Settings is the hub's "payment" tab since 2026-11-10 (owner); the old address stays.
+    assert landing(client.get(f"{co(shop)}/settings/payment-request"), HUB)["next"] == [
+        f"{co(shop)}/settings/payment"]
 
 
 def test_the_report_history_keeps_its_filters(shop):
