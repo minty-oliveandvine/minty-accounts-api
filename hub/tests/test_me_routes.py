@@ -63,7 +63,6 @@ def _pays_for(person, entity):
     ("accountant", True, False, True),
     ("admin", True, False, True),
     ("super_admin", True, False, True),
-    ("Super Admin", True, False, True),
     ("shop_manager", True, False, False),
     ("cashier", True, False, False),
     ("cashier", True, True, True),
