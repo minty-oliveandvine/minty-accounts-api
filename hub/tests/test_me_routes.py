@@ -48,7 +48,36 @@ def test_the_person_alone_when_opened_from_the_entity_list(db):
     resp = call("get", "/api/me/profile", me)
     assert resp.content.startswith(b'{"entity":null,"user":{')
     assert resp.json()["user"] == {"id": str(me.id), "first_name": "Olive", "last_name": "Owner",
-                                   "name": "Olive Owner", "initials": "OO", "email": "owner@test.com"}
+                                   "name": "Olive Owner", "initials": "OO", "email": "owner@test.com",
+                                   "can_view_subscriptions": False}
+
+
+def _pays_for(person, entity):
+    from minty_db.models import EntityModuleSubscription
+
+    EntityModuleSubscription.objects.create(id=uuid.uuid4(), entity_id=entity.id, function_code="PETTY_CASH",
+                                            payer_user_id=person.id, phase="active")
+
+
+@pytest.mark.parametrize(("role", "approved", "pays", "expected"), [
+    ("accountant", True, False, True),
+    ("admin", True, False, True),
+    ("super_admin", True, False, True),
+    ("Super Admin", True, False, True),
+    ("shop_manager", True, False, False),
+    ("cashier", True, False, False),
+    ("cashier", True, True, True),
+    ("accountant", False, False, False),
+    (None, True, True, True),
+])
+def test_manage_subscriptions_is_for_admins_accountants_and_subscribers(db, role, approved, pays, expected):
+    """The sidebar's Manage subscriptions item (owner, 2026-11-12): every admin and accountant
+    sees it, and every subscriber; nobody else."""
+    me = make_user()
+    entity = acme(me, role=role, approved=approved) if role else acme()
+    if pays:
+        _pays_for(me, entity)
+    assert call("get", "/api/me/profile", me).json()["user"]["can_view_subscriptions"] is expected
 
 
 def test_the_company_it_was_opened_from_with_the_persons_role(db):

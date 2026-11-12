@@ -2,6 +2,9 @@
 ``services/profile.py`` (Phase 5 of the Flask retirement, 2026-11-06). minty-web, the payments app
 and Petty Cash read it through the shared sidebar; onboarding-api forwards to it.
 
+``user.can_view_subscriptions`` says whether the sidebar offers Manage subscriptions (admins,
+accountants and subscribers; 2026-11-12).
+
 ``?entity=<id>`` names the company the profile was opened from: the answer then carries that
 company, the person's role and its modules (403 for one they may not see). ``PATCH {first_name?,
 last_name?, email?}`` saves the person's OWN row; a refusal is 422 with the sentence to show.
@@ -19,10 +22,10 @@ import uuid
 
 from django.db import IntegrityError, transaction
 from django.http import HttpRequest, HttpResponse
-from minty_db.models import Entity, User, UserEntity
+from minty_db.models import Entity, EntityModuleSubscription, User, UserEntity
 
 from hub.entities import _modules
-from hub.policy import has_entity_access, is_superuser
+from hub.policy import has_entity_access, is_superuser, role_at_least
 from hub.rules import EMAIL_ASCII_MESSAGE, is_ascii_email, role_label
 from hub.transport import guard, refuse, respond
 
@@ -67,10 +70,23 @@ def entity_context(user: User, entity_id: str) -> dict | None:
             "modules": sorted(_modules([org.id]).get(str(org.id), set()))}
 
 
+def can_view_subscriptions(user: User) -> bool:
+    """Whether the sidebar offers Manage subscriptions (owner, 2026-11-12): to every admin and
+    accountant of a company (approved membership), and to every subscriber (a payer on any
+    module row). The list itself is subscription-api's and applies the same rule per company;
+    changing a row stays the subscriber's alone."""
+    roles = (UserEntity.objects.filter(user_id=user.id, approved=True)
+             .values_list("role", flat=True).distinct())
+    if any(role_at_least(role, "accountant") for role in roles):
+        return True
+    return EntityModuleSubscription.objects.filter(payer_user_id=user.id).exists()
+
+
 def profile_payload(user: User, entity: dict | None = None) -> dict:
     return {
         "user": {"id": str(user.id), "first_name": _clean(user.first_name), "last_name": _clean(user.last_name),
-                 "name": display_name(user), "initials": initials(user), "email": _clean(user.email)},
+                 "name": display_name(user), "initials": initials(user), "email": _clean(user.email),
+                 "can_view_subscriptions": can_view_subscriptions(user)},
         "entity": entity,
     }
 
