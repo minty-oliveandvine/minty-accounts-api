@@ -204,7 +204,10 @@ Flask's bearer and public routes, moved with their paths, answers (Flask's `json
 
 **5C, a company's Users and Entity & Integration tabs** (`hub/company.py`). The company always
 comes from `?entity=`, never the body. Each action checks its own permission, then the rank rule:
-nobody gives a role above their own or manages someone who matches or outranks them.
+strict since 2026-11-12 (owner): you give and manage only roles BELOW your own - an admin
+manages no other admin and not themselves (a super_admin does). The rules are `minty_shared.policy`
+(v0.5), one copy for every backend; `hub/policy.py` keeps only the membership reads. The
+only-admin guard is reached by a super_admin or Minty staff on an ordinary membership.
 - **Users.** The members, the pending invitations, the roles this person may give, and who pays.
   The payer comes from minty-subscription-api; when it can't answer, the badge is just missing.
 - **Invitations** (`hub/invitations.py`, Flask's invite service).
@@ -435,11 +438,47 @@ pointing at nothing.
   archives a used (or Minty-made) account Xero dropped and leaves rows with no Xero id alone;
   `_mirror_bills` keeps bill codes with no Xero id; the connect's contact clean-up and
   `mirror_on_connect` only remove unused, Xero-made leftovers.
-- Not built (Phase 3): matching on a reconnect with accounts added while disconnected, a different
-  organisation, a stale match refused at publish. Tests: `hub/tests/test_xero_matching.py`,
+- **Phase 3 (owner, 2026-11-12; `xero/services/matching.py`):** `entities.xero_matching` (minty-db v0.6)
+  marks an open matching and why - `first` (above), `new_accounts`, `new_org`, `change` - and every
+  pending check reads it. A connect decides (`needs_matching(entity, tenant)`): another organisation
+  than the one recorded → `new_org`, matched from scratch (copies + automatic picks only; nothing
+  mirrored, archived or deleted before Finish; this used to mirror the new chart over the old one);
+  the same organisation with accounts made in Minty meanwhile → `new_accounts`, those alone. The
+  scope (`scope_accounts`) is every active account not linked to the current organisation (all of
+  them for `change`). **Change matches**: `POST .../matching/change` (connected, `XERO_SETTINGS_UPDATE`)
+  prefills a pick per account; `POST .../matching/cancel` leaves it, nothing changed; the company stays
+  connected and publishing goes on. Finish relinks only what changed (two accounts may swap: the
+  changed ones let go of their Xero id first, as `uq_account_entity_xero` isn't deferrable), clears
+  the marker, resets `xero_publish_from` to today for `first`/`new_org` (older records stay with the
+  old organisation) and keeps it for `new_accounts`/`change` (only what is published from then on);
+  a change's Finish skips the suppliers step (nothing created in Xero). Suppliers of another
+  organisation are linked by `link_suppliers` after a new organisation's Finish. While any matching is
+  open the sync refreshes only the copies. Tests: `hub/tests/test_xero_matching.py`,
   `test_xero_oauth.py` (`test_a_minty_companys_connect_keeps_every_account_and_goes_to_matching`),
   `xero/tests/test_sync.py` (the archive-not-delete cases); Postgres only.
 - **While matching** (`setup_mode` still `minty`), `sync.sync_company` - the sync every app asks for -
   refreshes only the Xero copies: importing Xero's chart as accounts put rows beside the company's own
   holding the Xero ids Finish links. Finish removes an unused Xero-made row that holds a picked Xero
   account (one a sync made before this) instead of refusing; a used one still refuses.
+
+## Settings' accounts and contacts (owner, 2026-11-12)
+
+`/api/me/company/accounts[/<id>]` (GET, POST / PATCH, DELETE) and `/api/me/company/contacts[/<id>]`
+(`hub/company_chart.py`): the hub's door to minty-onboarding-api, which holds the ONE implementation
+(the owner's choice that day - its account rules and side effects, the Xero writes, who owns what;
+its `/api/internal/chart/*`, `docs/features/wizard-api.md`). Here: the person's token, the company
+from `?entity=`, the right (`COA_VIEW` to read - cashier and up; `COA_CREATE` / `COA_UPDATE` /
+`COA_DELETE` to change - accountant and up, contacts included), then the call with a short-lived
+service assertion (scope `company-chart`) naming the company and the person - never the body's.
+onboarding-api's answer and status come back as they are. Unreachable, no JSON, our assertion
+refused, or `ONBOARDING_API_URL` unset (hosted: no default) -> 503 with one sentence, logged.
+Tests: `hub/tests/test_company_chart.py`.
+
+**No duplicates from the sync (owner, 2026-11-12; `xero/services/sync.py`).** A Xero account Minty
+doesn't hold yet takes the place of the company's own unlinked account of the same code and type
+(`linked` in the counts); a Xero contact, of the company's own unlinked contact of the same name
+(case and inner spaces ignored) - never a second row beside it. Then, on every live sync and the
+connect's (`connect.background_sync`), the company's contacts made in Minty while offline go to Xero
+(`_push_own_contacts` -> `matching.link_suppliers`: Xero's of the name, else made there); a name
+Xero refuses stays for the next sync, logged. Not while the company still keeps its books in Minty
+or a matching is open - its Finish links them. Tests: `xero/tests/test_sync.py`.

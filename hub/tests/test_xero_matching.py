@@ -13,11 +13,12 @@ created in Xero; the company stays disconnected until they are all through. Xero
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 import requests
+from django.db import transaction
 from minty_db.models import (
     AccountChangeLog,
     AccountInfo,
@@ -33,7 +34,7 @@ from minty_db.models import (
 
 from hub import xero_matching
 from hub.tests.test_company import call
-from xero.services import matching
+from xero.services import matching, sync
 
 pytestmark = pytest.mark.skipif(not os.environ.get("MINTY_TEST_PG_URI"), reason="Postgres only")
 
@@ -258,7 +259,7 @@ def test_suppliers_are_linked_by_name_else_created_and_a_refusal_keeps_it_discon
     assert XeroContactSync.objects.get(id=new.id).xero_contact_id.startswith("c-new-")
     assert Entity.objects.get(id=entity.id).status == "disconnected"
     page = call("get", "/api/me/company/integration", minty["admin"], entity.id).json()
-    assert page["matching"] == {"accounts": False, "contacts": True}
+    assert page["matching"] == {"accounts": False, "contacts": True, "reason": None}
 
     xero.refuse_create = set()
     retry = call("post", BASE + "/contacts", minty["admin"], entity.id).json()
@@ -272,7 +273,7 @@ def test_suppliers_are_linked_by_name_else_created_and_a_refusal_keeps_it_discon
 def test_the_integration_page_says_matching_is_pending(minty):
     page = call("get", "/api/me/company/integration", minty["admin"], minty["entity"].id).json()
     assert page["setup_mode"] == "minty" and page["own_accounts"] == 9
-    assert page["matching"] == {"accounts": True, "contacts": False}
+    assert page["matching"] == {"accounts": True, "contacts": False, "reason": "first"}
 
 
 def test_petty_cash_and_the_bank_cant_become_one_xero_account(minty):
@@ -334,3 +335,141 @@ def test_a_disconnect_after_matching_keeps_the_xero_codes(minty, xero):
                                                                                           "active"), row
     assert AccountInfo.objects.get(id=minty["rent"].id).xero_account_id == rent_before.xero_account_id
     assert not AccountInfo.objects.filter(entity_id=entity.id, code="1000").exists(), "no Minty code comes back"
+
+# ---- Phase 3 (owner, 2026-11-12): a new organisation is matched from scratch, older records stay with
+# the old one (xero_publish_from reset); changing the matches reuses the page, prefilled, and affects
+# only what is published from then on; while any matching is open the sync only refreshes the copies.
+
+TODAY = datetime.now(ZoneInfo("Asia/Hong_Kong")).date()
+ORG2 = "org-two"
+
+
+def _copy_in(guid, org=ORG):
+    return XeroAccount.objects.get(xero_guid=guid, xero_org_id=org)
+
+
+@pytest.fixture
+def connected(minty, xero):
+    """Phase 2 done: matched, connected, publishing from an earlier day."""
+    _match_everything_used(minty)
+    assert call("post", BASE + "/finish", minty["admin"], minty["entity"].id).status_code == 200
+    Entity.objects.filter(id=minty["entity"].id).update(xero_publish_from=date(2026, 1, 1))
+    minty["entity"].refresh_from_db()
+    return minty
+
+
+def _pick_in(m, row, guid, org=ORG):
+    return call("patch", BASE, m["admin"], m["entity"].id,
+                {"account_id": str(m[row].id), "xero_account_id": str(_copy_in(guid, org).id) if guid else None})
+
+
+# ---- changing the matches ------------------------------------------------------------------------------
+
+
+def test_changing_starts_prefilled_and_cancel_leaves_everything(connected):
+    entity, admin = connected["entity"], connected["admin"]
+    resp = call("post", BASE + "/change", admin, entity.id)
+    assert resp.status_code == 200, resp.content
+    body = resp.json()
+    assert body["reason"] == "change" and body["matched"] == body["total"]
+    assert _rows(body)["Rent"]["pick"]["xero_account_id"] == str(_copy_in("x-rent").id)
+    assert Entity.objects.get(id=entity.id).status == "connected", "publishing goes on"
+
+    page = call("get", "/api/me/company/integration", admin, entity.id).json()
+    assert page["matching"]["reason"] == "change" and page["matching"]["accounts"] is True
+
+    cancel = call("post", BASE + "/cancel", admin, entity.id)
+    assert cancel.status_code == 200, cancel.content
+    assert Entity.objects.get(id=entity.id).xero_matching is None
+    assert not AccountMatchDraft.objects.filter(entity_id=entity.id).exists()
+
+
+def test_cancel_is_only_for_changing(minty):
+    resp = call("post", BASE + "/cancel", minty["admin"], minty["entity"].id)
+    assert resp.status_code == 409
+
+
+def test_a_change_can_swap_two_accounts_and_keeps_the_publish_date(connected):
+    entity, admin = connected["entity"], connected["admin"]
+    wages = AccountInfo.objects.get(entity_id=entity.id, xero_account_id="x-wages")
+    connected["wages"] = wages
+    assert call("post", BASE + "/change", admin, entity.id).status_code == 200
+    assert _pick_in(connected, "rent", "x-wages").status_code == 200
+    assert _pick_in(connected, "wages", "x-rent").status_code == 200
+
+    resp = call("post", BASE + "/finish", admin, entity.id)
+    assert resp.status_code == 200, resp.content
+    assert AccountInfo.objects.get(id=connected["rent"].id).xero_account_id == "x-wages"
+    assert AccountInfo.objects.get(id=wages.id).xero_account_id == "x-rent"
+    company = Entity.objects.get(id=entity.id)
+    assert (company.xero_matching, company.status) == (None, "connected")
+    assert company.xero_publish_from == date(2026, 1, 1), "only what is published from now on"
+    latest = AccountChangeLog.objects.filter(entity_id=entity.id).order_by("-changed_at").first()
+    changed = AccountChangeLog.objects.filter(batch_id=latest.batch_id)
+    assert sorted(changed.values_list("account_id", flat=True)) == sorted([connected["rent"].id, wages.id]), (
+        "the unchanged matches write no log line")
+
+
+def test_finishing_a_change_leaves_the_suppliers_alone(connected, xero):
+    """A change is about the accounts: its Finish creates nothing in Xero, whatever suppliers of an
+    older organisation the company still holds."""
+    entity = connected["entity"]
+    XeroContactSync.objects.create(entity_id=entity.id, name="Old Supplier", xero_contact_id="c-old",
+                                   xero_org_id="org-old")
+    assert call("post", BASE + "/change", connected["admin"], entity.id).status_code == 200
+    resp = call("post", BASE + "/finish", connected["admin"], entity.id)
+    assert resp.status_code == 200, resp.content
+    assert resp.json()["connected"] is True and xero.created == []
+    assert Entity.objects.get(id=entity.id).status == "connected"
+
+
+def test_only_a_connected_company_can_change_its_matches(minty):
+    resp = call("post", BASE + "/change", minty["admin"], minty["entity"].id)
+    assert resp.status_code == 409
+
+
+def test_a_cashier_cannot_change_the_matches(connected):
+    resp = call("post", BASE + "/change", connected["cashier"], connected["entity"].id)
+    assert resp.status_code == 403
+
+
+# ---- a new organisation ------------------------------------------------------------------------------
+
+
+def test_a_new_organisation_is_matched_from_scratch_and_older_records_stay_behind(connected, xero, monkeypatch):
+    entity, admin = connected["entity"], connected["admin"]
+    before = set(AccountInfo.objects.filter(entity_id=entity.id).values_list("id", "record_status"))
+    xero.accounts = [{**a, "AccountID": a["AccountID"].replace("x-", "y-")} for a in xero.accounts]
+    monkeypatch.setattr(xero_matching, "resolve_entity_access_token", lambda entity_id: ("tok", ORG2))
+    with transaction.atomic():
+        matching.begin(entity.id, "tok", ORG2, reason="new_org")
+        Entity.objects.filter(id=entity.id).update(xero_org_id=ORG2, status="disconnected")
+
+    assert set(AccountInfo.objects.filter(entity_id=entity.id).values_list("id", "record_status")) == before, (
+        "nothing archived or deleted before Finish")
+    body = call("get", BASE, admin, entity.id).json()
+    assert body["reason"] == "new_org"
+    assert _rows(body)["Rent"]["pick"]["xero_account_id"] == str(_copy_in("y-rent", ORG2).id), "same code and type"
+
+    for row, guid in (("petty", "y-pc"), ("bank", "y-bank"), ("sales", "y-sales"), ("director", "y-dir")):
+        assert _pick_in(connected, row, guid, ORG2).status_code == 200, row
+    connected["survivor"] = AccountInfo.objects.get(entity_id=entity.id, xero_account_id="x-wages")
+    assert _pick_in(connected, "survivor", "y-wages", ORG2).status_code == 200
+    resp = call("post", BASE + "/finish", admin, entity.id)
+    assert resp.status_code == 200, resp.content
+
+    company = Entity.objects.get(id=entity.id)
+    assert (company.xero_matching, company.xero_publish_from) == (None, TODAY), "older records stay behind"
+    assert AccountInfo.objects.get(id=connected["petty"].id).xero_account_id == "y-pc"
+    assert AccountInfo.objects.get(id=connected["rent"].id).xero_account_id == "y-rent"
+
+
+def test_a_sync_while_any_matching_is_open_only_refreshes_the_copies(connected, xero):
+    entity = connected["entity"]
+    assert call("post", BASE + "/change", connected["admin"], entity.id).status_code == 200
+    xero.accounts = [*xero.accounts, {"AccountID": "x-new", "Code": "499", "Name": "Sundries", "Type": "EXPENSE",
+                                      "Status": "ACTIVE"}]
+    sync.sync_company(entity.id, "tok", ORG)
+    assert not AccountInfo.objects.filter(entity_id=entity.id, xero_account_id="x-new").exists()
+    assert XeroAccount.objects.filter(entity_id=entity.id, xero_guid="x-new").exists()
+

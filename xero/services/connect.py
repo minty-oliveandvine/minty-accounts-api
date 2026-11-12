@@ -393,6 +393,8 @@ def background_sync(entity_id, access_token, tenant_id) -> None:
                                .exclude(id__in=usage.used_contact_ids(entity_id)).delete()[0])
                 counts = sync.apply_contacts(entity_id, contacts, tenant_id)
             logger.info("Contact sync entity %s: %s, %s no longer in Xero removed", entity_id, counts, removed)
+            # contacts made in Minty while offline go to Xero now (owner, 2026-11-12)
+            sync._push_own_contacts(entity_id, access_token, tenant_id)
     except Exception:
         logger.exception("Contact sync failed for entity %s", entity_id)
     try:

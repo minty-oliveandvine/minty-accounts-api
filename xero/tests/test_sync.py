@@ -47,6 +47,14 @@ class FakeXero:
         self.contact_pages: list[list] = [[]]
         self.fail_contacts_page: int | None = None
         self.asked: list[tuple[str, dict]] = []
+        self.made: list[str] = []
+
+    def post(self, url, headers=None, json=None, timeout=None, **_):
+        """A contact made in Xero (matching._create_in_xero): its id is ``made-<name>``."""
+        assert url.endswith("/Contacts") and headers["Xero-Tenant-Id"] == TENANT
+        name = json["Contacts"][0]["Name"]
+        self.made.append(name)
+        return _Resp(200, {"Contacts": [{"ContactID": f"made-{name}", "Name": name}]})
 
     def get(self, url, headers=None, params=None, timeout=None, **_):
         assert headers["Xero-Tenant-Id"] == TENANT and timeout == sync.TIMEOUT
@@ -65,6 +73,7 @@ class FakeXero:
 def xero(monkeypatch) -> FakeXero:
     fake = FakeXero()
     monkeypatch.setattr(requests, "get", fake.get)
+    monkeypatch.setattr(requests, "post", fake.post)
     return fake
 
 
@@ -90,7 +99,7 @@ def test_new_accounts_are_added_and_mirrored_into_both_lists(company, xero):
 
     result = _run(company)
 
-    assert result["accounts"] == {"added": 3, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0}
+    assert result["accounts"] == {"added": 3, "linked": 0, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0}
     rows = _accounts(company)
     assert (rows["a-bank"].bank_account_number, rows["a-bank"].status) == ("123456789", "ACTIVE")
     assert set(EntityAccountXero.objects.filter(account__entity_id=company.id)
@@ -162,7 +171,7 @@ def test_contacts_are_added_and_renamed_never_removed(company, xero):
     XeroContactSync.objects.create(entity_id=company.id, xero_contact_id="c-gone", name="Archived In Xero")
     xero.contact_pages = [[{"ContactID": "c-1", "Name": "New Name"}, {"ContactID": "c-2", "Name": "ABC Supplies"}]]
 
-    assert _run(company)["contacts"] == {"added": 1, "renamed": 1}
+    assert _run(company)["contacts"] == {"added": 1, "linked": 0, "renamed": 1}
     names = dict(XeroContactSync.objects.filter(entity_id=company.id).values_list("xero_contact_id", "name"))
     assert names == {"c-1": "New Name", "c-2": "ABC Supplies", "c-gone": "Archived In Xero"}
     assert XeroContactSync.objects.get(xero_contact_id="c-2").xero_org_id == TENANT
@@ -203,8 +212,8 @@ def test_the_route_syncs_the_assertions_company(db, xero):
     resp = _post(entity.id)
 
     assert resp.status_code == 200
-    assert resp.json() == {"accounts": {"added": 1, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0},
-                           "contacts": {"added": 0, "renamed": 0}}
+    assert resp.json() == {"accounts": {"added": 1, "linked": 0, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0},
+                           "contacts": {"added": 0, "linked": 0, "renamed": 0}}
 
 
 def test_the_route_refuses_a_token_for_another_route_and_a_company_with_no_connection(db, xero):
@@ -254,7 +263,7 @@ def test_a_recode_follows_and_an_account_xero_dropped_is_marked_deleted_in_the_c
     assert copies["a-2"].status == "DELETED", "kept, as the sync marks what Xero no longer sends"
 
 
-def test_each_contact_gets_its_copy_and_a_minty_supplier_is_left_alone(company, xero):
+def test_each_contact_gets_its_copy_and_a_minty_supplier_goes_to_xero(company, xero):
     from minty_db.models import XeroContact
 
     XeroContactSync.objects.create(entity_id=company.id, name="Kept In Minty", source="user")
@@ -266,8 +275,10 @@ def test_each_contact_gets_its_copy_and_a_minty_supplier_is_left_alone(company, 
     copy = XeroContact.objects.get(entity_id=company.id, xero_guid="c-1")
     assert (copy.name, copy.xero_org_id) == ("ABC Supplies Ltd", TENANT)
     assert XeroContactSync.objects.get(xero_contact_id="c-1").xero_contact_link_id == copy.id
+    # made in Minty while offline: made in Xero on the live sync, once (owner, 2026-11-12)
     minty = XeroContactSync.objects.get(entity_id=company.id, name="Kept In Minty")
-    assert (minty.xero_contact_id, minty.xero_contact_link_id) == (None, None)
+    assert minty.xero_contact_id == "made-Kept In Minty" and minty.xero_contact_link_id is not None
+    assert xero.made == ["Kept In Minty"]
 
 
 def test_a_disconnect_keeps_every_account_and_the_copies(company, xero):
@@ -325,7 +336,7 @@ def test_a_minty_account_and_a_hand_added_bill_code_are_never_touched(company, x
     assert EntityBillAccountXero.objects.filter(entity_id=company.id, account_code="420").exists()
 
 
-def test_the_connect_sync_keeps_a_minty_supplier(company, xero):
+def test_the_connect_sync_keeps_a_minty_supplier_and_puts_it_in_xero(company, xero):
     from xero.services.connect import background_sync
 
     XeroContactSync.objects.create(entity_id=company.id, name="Kept In Minty", source="user")
@@ -337,3 +348,30 @@ def test_the_connect_sync_keeps_a_minty_supplier(company, xero):
 
     names = set(XeroContactSync.objects.filter(entity_id=company.id).values_list("name", flat=True))
     assert names == {"Kept In Minty", "ABC Supplies"}, "an unused Xero contact Xero dropped still goes"
+    assert XeroContactSync.objects.get(entity_id=company.id, name="Kept In Minty").xero_contact_id == (
+        "made-Kept In Minty")
+
+
+def test_a_xero_contact_of_a_minty_contacts_name_links_to_it_never_a_second_row(company, xero):
+    """No duplicates (owner, 2026-11-12): case and inner spaces don't count."""
+    own = XeroContactSync.objects.create(entity_id=company.id, name="Kee  Wah", source="user")
+    xero.contact_pages = [[{"ContactID": "c-kee", "Name": "KEE WAH"}]]
+
+    _run(company)
+
+    assert XeroContactSync.objects.filter(entity_id=company.id).count() == 1
+    own.refresh_from_db()
+    assert (own.xero_contact_id, own.xero_org_id) == ("c-kee", TENANT)
+    assert xero.made == []
+
+
+def test_a_xero_account_of_a_minty_accounts_code_and_type_links_to_it(company, xero):
+    own = AccountInfo.objects.create(entity_id=company.id, name="Rent", code="469", xero_code="469",
+                                     account_type="expense", type="EXPENSE", status="ACTIVE", source="user")
+    xero.accounts = [acct("a-469", "469", "Rent HK"), acct("a-469s", "469", "Rent income", kind="SALES")]
+
+    _run(company)
+
+    own.refresh_from_db()
+    assert own.xero_account_id == "a-469"
+    assert AccountInfo.objects.filter(entity_id=company.id, xero_code="469").count() == 2  # the sales one is new

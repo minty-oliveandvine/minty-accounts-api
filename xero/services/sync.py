@@ -39,7 +39,7 @@ import logging
 
 import requests
 from django.conf import settings
-from django.db import IntegrityError, connection, transaction
+from django.db import IntegrityError, connection, models, transaction
 from django.utils import timezone
 from minty_db.models import (
     AccountInfo,
@@ -133,11 +133,16 @@ def _status(account: dict) -> str:
 
 def apply_accounts(entity_id, accounts: list[dict], org) -> dict:
     """Make the company's account tables match Xero's ACTIVE ``accounts`` (non-empty)."""
-    counts = {"added": 0, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0}
+    counts = {"added": 0, "linked": 0, "activated": 0, "refreshed": 0, "archived": 0, "deleted": 0}
     with transaction.atomic():
         lock(entity_id)
         snapshot = {a["AccountID"]: a for a in accounts if a.get("AccountID")}
         rows = list(AccountInfo.objects.filter(entity_id=entity_id))
+        # No duplicates (owner, 2026-11-12): a new Xero account takes the place of the company's own
+        # unlinked account of the same code and type, rather than arriving beside it.
+        own = {((r.xero_code or r.code or "").strip(), r.type): r for r in rows
+               if r.source in MINTY_MADE and not r.xero_account_id and r.merged_into_id is None
+               and r.record_status == "active"}
         used = usage.used_account_ids(entity_id)
         kept = {}
         for row in rows:
@@ -157,6 +162,12 @@ def apply_accounts(entity_id, accounts: list[dict], org) -> dict:
         for account_id, account in snapshot.items():
             row = kept.get(account_id)
             if row is None:
+                mine = own.pop((str(account.get("Code") or "").strip(), account.get("Type")), None)
+                if mine is not None:
+                    mine.xero_account_id, mine.status = account_id, "ACTIVE"
+                    mine.save(update_fields=["xero_account_id", "status"])
+                    counts["linked"] += 1
+                    continue
                 try:
                     with transaction.atomic():
                         AccountInfo.objects.create(
@@ -276,16 +287,26 @@ def _mirror_bills(entity_id) -> None:
 
 def apply_contacts(entity_id, contacts: list[dict], org) -> dict:
     """New contacts added, changed names updated; nothing removed."""
-    counts = {"added": 0, "renamed": 0}
+    counts = {"added": 0, "linked": 0, "renamed": 0}
     with transaction.atomic():
         lock(entity_id)
         stored = {c.xero_contact_id: c for c in XeroContactSync.objects.filter(entity_id=entity_id)}
+        # No duplicates (owner, 2026-11-12): a new Xero contact is the company's own unlinked one of
+        # the same name (case and inner spaces ignored), rather than a second row beside it.
+        own = {_name_key(c.name): c for c in XeroContactSync.objects.filter(
+            entity_id=entity_id, source__in=MINTY_MADE, merged_into__isnull=True, record_status="active")
+            .filter(models.Q(xero_contact_id__isnull=True) | models.Q(xero_contact_id=""))}
         for contact in contacts:
             contact_id = contact.get("ContactID")
             if not contact_id:
                 continue
             name = _trunc(contact.get("Name", ""), 150) or ""
             row = stored.get(contact_id)
+            if row is None and (mine := own.pop(_name_key(name), None)) is not None:
+                XeroContactSync.objects.filter(id=mine.id).update(xero_contact_id=contact_id, xero_org_id=str(org))
+                stored[contact_id] = True
+                counts["linked"] += 1
+                continue
             if row is None:
                 XeroContactSync.objects.create(entity_id=entity_id, xero_contact_id=contact_id, xero_org_id=str(org),
                                                name=name)
@@ -299,6 +320,10 @@ def apply_contacts(entity_id, contacts: list[dict], org) -> dict:
             _copy_contacts(entity_id, contacts, org)
     logger.info("xero sync: contacts for company %s: %s", entity_id, counts)
     return counts
+
+
+def _name_key(name) -> str:
+    return " ".join(str(name or "").split()).lower()
 
 
 def _copy_contacts(entity_id, contacts: list[dict], org) -> None:
@@ -333,9 +358,11 @@ def sync_company(entity_id, access_token: str, org) -> dict:
     contacts = fetch_contacts(access_token, org)
     from minty_db.models import Entity
 
-    if Entity.objects.filter(id=entity_id, setup_mode="minty").exists():
-        # Still Minty's books - its accounts are being matched (Settings Phase 2, 2026-11-11): only the
-        # Xero copies are refreshed. Importing Xero's chart as accounts would put rows beside the
+    if Entity.objects.filter(id=entity_id).filter(
+            models.Q(setup_mode="minty") | models.Q(xero_matching__isnull=False)).exists():
+        # Still Minty's books, or any matching open (Phase 3, 2026-11-12: a new organisation, new
+        # accounts, a change) - its accounts are being matched (Settings Phase 2, 2026-11-11): only the
+        # Xero copies are refreshed. A new organisation's chart would otherwise archive the old one's. Importing Xero's chart as accounts would put rows beside the
         # company's own holding the very Xero ids matching's Finish links.
         with transaction.atomic():
             lock(entity_id)
@@ -346,7 +373,34 @@ def sync_company(entity_id, access_token: str, org) -> dict:
         logger.info("xero sync: company %s is matching its accounts; only the Xero copies refreshed", entity_id)
         return {"accounts": {"copied": len(accounts or [])} if accounts else None,
                 "contacts": {"copied": len(contacts)} if contacts is not None else None}
-    return {
+    answer = {
         "accounts": apply_accounts(entity_id, accounts, org) if accounts else None,
         "contacts": apply_contacts(entity_id, contacts, org) if contacts is not None else None,
     }
+    if contacts is not None:
+        _push_own_contacts(entity_id, access_token, org)
+    return answer
+
+
+def _push_own_contacts(entity_id, access_token: str, org) -> None:
+    """The company's contacts made in Minty while it was offline go to Xero on every live sync,
+    the connect's first included (owner, 2026-11-12): each linked to Xero's of its name, else made
+    there (``matching.link_suppliers``). A name Xero refuses stays in Minty for the next sync."""
+    from minty_db.models import Entity
+
+    from xero.services import matching
+
+    if Entity.objects.filter(id=entity_id).filter(
+            models.Q(setup_mode="minty") | models.Q(xero_matching__isnull=False)).exists():
+        return  # a matching links them at its Finish (the suppliers step)
+    if not matching.own_suppliers(entity_id).exists():
+        return
+    try:
+        failed = matching.link_suppliers(entity_id, access_token, org, None)
+    except matching.Refused as refused:
+        logger.warning("xero sync: company %s contacts not pushed (%s); next sync tries again", entity_id,
+                       refused)
+        return
+    if failed:
+        logger.warning("xero sync: company %s: Xero refused %s contact(s); next sync tries again", entity_id,
+                       len(failed))

@@ -56,6 +56,14 @@ def member(entity, email, role, **names):
     return person
 
 
+def staff(entity):
+    """Minty staff on the company: a system superuser (acts as super_admin) on a cashier's row."""
+    person = member(entity, "staff@test.com", "cashier")
+    User.objects.filter(id=person.id).update(system_role="superadmin")
+    person.refresh_from_db()
+    return person
+
+
 def users_page(person, entity):
     return call("get", "/api/me/company/users", person, entity.id).json()
 
@@ -89,12 +97,13 @@ def test_the_users_tab_reads_the_members_their_rights_and_the_roles_one_may_give
     assert page["modules"] == ["PETTY_CASH"] and page["notices"] == []
     rows = {m["email"]: m for m in page["members"]}
     assert set(rows) == {"admin@test.com", "acc@test.com", "mgr@test.com", "cash@test.com"}
-    # a shop manager may change roles at or below their own, and remove nobody (accountant+)
+    # strict (owner, 2026-11-12): a shop manager changes only roles below their own - cashiers -
+    # and removes nobody (accountant+)
     assert rows["cash@test.com"]["can_change_role"] is True
-    assert rows["mgr@test.com"]["can_change_role"] is True and rows["mgr@test.com"]["is_you"] is True
+    assert rows["mgr@test.com"]["can_change_role"] is False and rows["mgr@test.com"]["is_you"] is True
     assert rows["admin@test.com"]["can_change_role"] is False
     assert all(m["can_remove"] is False for m in page["members"])
-    assert [r["value"] for r in page["roles"]] == ["shop_manager", "cashier"]
+    assert [r["value"] for r in page["roles"]] == ["cashier"]
     assert page["can_invite"] is True and page["invitations"] == []
     assert rows["admin@test.com"]["role_label"] == "Admin" and rows["admin@test.com"]["initials"] == "AA"
 
@@ -115,7 +124,10 @@ def test_a_cashier_may_not_open_the_tab(shop):
 
 def test_a_role_change_is_the_role_only_and_checked_against_rank(shop):
     entity, cashier = shop["entity"].id, shop["cashier"]
-    changed = call("patch", f"/api/me/company/users/{cashier.id}", shop["manager"], entity,
+    # strict: a role at your own rank is refused too
+    same = call("patch", f"/api/me/company/users/{cashier.id}", shop["manager"], entity, {"role": "shop_manager"})
+    assert (same.status_code, same.json()) == (403, {"error": "I can't let you give someone a role at or above your own."})
+    changed = call("patch", f"/api/me/company/users/{cashier.id}", shop["accountant"], entity,
                    {"role": "shop_manager", "first_name": "Renamed"})
     assert changed.status_code == 200, changed.json()
     assert changed.json() == {"message": "Role saved.", "role": "shop_manager", "role_label": "Shop Manager"}
@@ -144,8 +156,11 @@ def test_the_company_is_the_querys_never_the_bodys(shop):
 
 def test_removal_runs_the_guards_in_order_and_removes(shop):
     entity = shop["entity"].id
+    # strict: only a rank above admin reaches the only-admin guard - Minty staff (a system superuser)
+    # on an ordinary membership, who is no second admin
+    owner = staff(shop["entity"])
     assert call("delete", f"/api/me/company/users/{shop['admin'].id}", shop["accountant"], entity).status_code == 403
-    last = call("delete", f"/api/me/company/users/{shop['admin'].id}", shop["admin"], entity)
+    last = call("delete", f"/api/me/company/users/{shop['admin'].id}", owner, entity)
     assert last.status_code == 409 and "only admin" in last.json()["error"]
     assert call("delete", f"/api/me/company/users/{shop['cashier'].id}", shop["manager"], entity).status_code == 403
 
@@ -172,9 +187,10 @@ def test_any_row_naming_them_as_payer_refuses_the_removal(shop, facts):
 
 def test_the_payer_guards_fail_closed_when_the_subscription_api_cannot_answer(shop, facts):
     second = member(shop["entity"], "second@test.com", "admin")
+    owner = member(shop["entity"], "owner@test.com", "super_admin")
     facts["value"] = None
     for method, body in (("delete", None), ("patch", {"role": "cashier"})):
-        resp = call(method, f"/api/me/company/users/{second.id}", shop["admin"], shop["entity"].id, body)
+        resp = call(method, f"/api/me/company/users/{second.id}", owner, shop["entity"].id, body)
         assert (resp.status_code, resp.json()) == (503, {"error": company.NO_SUBSCRIPTION_ANSWER})
     assert UserEntity.objects.get(user_id=second.id).role == "admin"
 
@@ -188,22 +204,34 @@ def test_a_change_below_admin_never_asks_the_subscription_api(shop, facts):
 
 def test_the_payer_keeps_admin(shop, facts):
     second = member(shop["entity"], "second@test.com", "admin")
+    owner = member(shop["entity"], "owner@test.com", "super_admin")
     facts["value"] = {**facts["value"], "payer": str(second.id), "payers": [str(second.id)]}
-    resp = call("patch", f"/api/me/company/users/{second.id}", shop["admin"], shop["entity"].id, {"role": "cashier"})
+    resp = call("patch", f"/api/me/company/users/{second.id}", owner, shop["entity"].id, {"role": "cashier"})
     assert resp.status_code == 409 and resp.json()["error"].startswith("I can't take admin away")
     # admin to admin is no step down
-    assert call("patch", f"/api/me/company/users/{second.id}", shop["admin"], shop["entity"].id,
+    assert call("patch", f"/api/me/company/users/{second.id}", owner, shop["entity"].id,
                 {"role": "admin"}).status_code == 200
+
+
+def test_an_admin_manages_no_other_admin(shop):
+    """Strict (owner, 2026-11-12): you manage only roles below yours - not another admin, not yourself."""
+    second = member(shop["entity"], "second@test.com", "admin")
+    for target in (second, shop["admin"]):
+        for method, body in (("delete", None), ("patch", {"role": "accountant"})):
+            resp = call(method, f"/api/me/company/users/{target.id}", shop["admin"], shop["entity"].id, body)
+            assert resp.status_code == 403, (target.email, method)
+    assert UserEntity.objects.get(user_id=second.id, entity_id=shop["entity"].id).role == "admin"
 
 
 def test_the_only_admin_is_neither_demoted_nor_removed_and_a_deactivated_admin_does_not_count(shop):
     entity = shop["entity"]
     sleeping = member(entity, "sleeping@test.com", "admin")
     User.objects.filter(id=sleeping.id).update(approved=False)
-    demote = call("patch", f"/api/me/company/users/{shop['admin'].id}", shop["admin"], entity.id, {"role": "cashier"})
+    owner = staff(entity)
+    demote = call("patch", f"/api/me/company/users/{shop['admin'].id}", owner, entity.id, {"role": "cashier"})
     assert demote.status_code == 409 and demote.json()["error"].startswith("I can't demote the only admin")
     User.objects.filter(id=sleeping.id).update(approved=True)
-    assert call("patch", f"/api/me/company/users/{shop['admin'].id}", shop["admin"], entity.id,
+    assert call("patch", f"/api/me/company/users/{shop['admin'].id}", owner, entity.id,
                 {"role": "accountant"}).status_code == 200
 
 

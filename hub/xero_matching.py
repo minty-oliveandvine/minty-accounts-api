@@ -13,6 +13,8 @@ Each is the hub's door plus ``?entity=`` and a permission, as the Integration ta
 - ``POST /api/me/company/xero/matching/finish``: the replace, then the suppliers; answers
   ``{connected, failed_contacts}`` with the page.
 - ``POST /api/me/company/xero/matching/contacts``: the suppliers Xero refused, sent again.
+- ``POST /api/me/company/xero/matching/change``: change the matches (Phase 3, 2026-11-12) - a connected
+  company's page again, prefilled; ``POST .../cancel`` leaves a change, nothing changed.
 """
 
 from __future__ import annotations
@@ -99,10 +101,16 @@ def company_xero_matching_finish(request: HttpRequest) -> HttpResponse:
     early, user, entity_id = _open(request, Permission.XERO_SETTINGS_UPDATE, NO_EDIT)
     if early is not None:
         return early
+    changing = Entity.objects.filter(id=entity_id, xero_matching="change").exists()
     try:
         matching.finish(entity_id, user.id)
     except matching.Refused as refusal:
         return refuse(request, refusal.message, refusal.status)
+    if changing:
+        # A change of the matches is about the accounts (Phase 3): its suppliers are left as they are,
+        # and the company stays connected - nothing is created in Xero.
+        entity = Entity.objects.get(id=entity_id)
+        return respond(request, {**matching.read(entity), "connected": True, "failed_contacts": []})
     try:
         return _finish_suppliers(request, user, entity_id)
     except matching.Refused as refusal:
@@ -124,3 +132,23 @@ def company_xero_matching_contacts(request: HttpRequest) -> HttpResponse:
         return _finish_suppliers(request, user, entity_id)
     except matching.Refused as refusal:
         return refuse(request, refusal.message, refusal.status)
+
+
+def _change_route(request: HttpRequest, act) -> HttpResponse:
+    if request.method not in ("POST", "OPTIONS"):
+        return refuse(request, "Method not allowed", 405)
+    early, user, entity_id = _open(request, Permission.XERO_SETTINGS_UPDATE, NO_EDIT)
+    if early is not None:
+        return early
+    try:
+        return respond(request, act(entity_id))
+    except matching.Refused as refusal:
+        return refuse(request, refusal.message, refusal.status)
+
+
+def company_xero_matching_change(request: HttpRequest) -> HttpResponse:
+    return _change_route(request, matching.start_change)
+
+
+def company_xero_matching_cancel(request: HttpRequest) -> HttpResponse:
+    return _change_route(request, matching.cancel_change)

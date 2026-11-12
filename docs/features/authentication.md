@@ -254,8 +254,8 @@ minty-db; change them together.
 - A refusal answers a JSON caller 403 with the route's own sentence; a browser gets the message
   flashed and a redirect to `/entity`, which carries it to minty-web's company list as a notice.
 - A company's members are managed per company - minty-web's Users tab over `/api/me/company/*`
-  (`hub/company.py`): each action its permission, then the rank rule (nobody gives a role above
-  their own or manages someone who matches or outranks them), then the payer and only-admin
+  (`hub/company.py`): each action its permission, then the rank rule (strict since 2026-11-12: nobody gives
+  or manages a role at or above their own; `minty_shared.policy`), then the payer and only-admin
   guards (`docs/features/accounts-api.md`, 5C).
 - Tightened in the move (2026-11-06): connecting a company to Xero needs `XERO_SETTINGS_UPDATE` on
   it (Flask asked only `ENTITY_CREATE`); choosing onboarding modules needs an **approved** member.

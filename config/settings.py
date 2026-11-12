@@ -129,6 +129,10 @@ if not ACCOUNTS_API_URL and not DEVELOPMENT:
 
 #: minty-subscription-api, asked for the hub's subscription facts (core/subscription_client.py).
 SUBSCRIPTION_API_URL = _url("SUBSCRIPTION_API_URL", "http://127.0.0.1:8001")
+#: minty-onboarding-api, which holds a company's accounts and contacts for the hub's Settings
+#: (hub/company_chart.py, 2026-11-12). Localhost only in development; hosted and unset, those
+#: endpoints log it and answer 503 - never a guessed address.
+ONBOARDING_API_URL = _url("ONBOARDING_API_URL", "http://127.0.0.1:8030" if DEVELOPMENT else "")
 
 # ---- mail ------------------------------------------------------------------------------------
 #: ``SMTP_URL`` (``minty_shared.config``: ``smtp://user:pass@host:587``, ``?tls=0``, ``?timeout=``).

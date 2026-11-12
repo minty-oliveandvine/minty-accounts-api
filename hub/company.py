@@ -163,7 +163,7 @@ def company_invite(request: HttpRequest) -> HttpResponse:
     if len(first_name) > 100 or len(last_name) > 100:
         return refuse(request, "Please keep each name to 100 characters or fewer.", 400)
     if not can_manage_role_assignment_for_entity(user, role, entity_id):
-        return refuse(request, "I can't let you give someone a role above your own.", 403)
+        return refuse(request, "I can't let you give someone a role at or above your own.", 403)
     invitation, error = invitations.create_invitation(entity_id, email, role, user.id, first_name, last_name)
     if error:
         logger.info("hub invitation refused actor=%s entity=%s reason=%r", user.id, entity_id, error)
@@ -181,7 +181,7 @@ def _invitation_to_manage(request, user, entity_id, invitation_id, verb: str):
     if inv is None or str(inv.entity_id) != entity_id:
         return refuse(request, "Hmm, I couldn't find that invitation.", 404), None
     if not can_manage_role_assignment_for_entity(user, str(inv.role or ""), entity_id):
-        return refuse(request, f"I can't let you {verb} an invitation for a role above your own.", 403), None
+        return refuse(request, f"I can't let you {verb} an invitation for a role at or above your own.", 403), None
     return None, inv
 
 
@@ -315,7 +315,7 @@ def company_member(request: HttpRequest, member_id: str) -> HttpResponse:
         if new not in ASSIGNABLE:
             return refuse(request, "Pick one of the roles offered.", 400)
         if not can_manage_role_assignment_for_entity(user, new, entity_id):
-            raise Refusal("I can't let you give someone a role above your own.", 403)
+            raise Refusal("I can't let you give someone a role at or above your own.", 403)
         _may_touch(user, current, entity_id)
         _role_change_allowed(current, new, member_id, entity_id)
     except Refusal as refusal:
@@ -394,7 +394,9 @@ def _integration_page(user: User, entity_id: str) -> dict:
         # Settings Phase 2: a Minty company's connect matches its accounts first (SET-1b, frame 3).
         "setup_mode": org.setup_mode,
         "own_accounts": matching.own_accounts(org.id).count() if org.setup_mode == "minty" else 0,
-        "matching": {"accounts": matching.accounts_pending(org), "contacts": matching.contacts_pending(org)},
+        "matching": {"accounts": matching.accounts_pending(org), "contacts": matching.contacts_pending(org),
+                     # why a matching is open (Phase 3): first | new_accounts | new_org | change
+                     "reason": org.xero_matching},
     }
 
 

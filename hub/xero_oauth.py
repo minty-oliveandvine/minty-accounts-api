@@ -370,10 +370,14 @@ def _record(entity: Entity, user: User, grant: connect.Grant, tenant_id, tenant_
     A company that keeps its books in Minty, with its own accounts, is NOT mirrored (that deleted
     them): matching begins instead (``xero/services/matching.py``) - the Xero copies and the
     automatic picks - and the company stays as it was (disconnected) until Finish. True then."""
-    begins_matching = matching.needs_matching(entity)
+    # Phase 3 (2026-11-12): a reconnect to another organisation, or one that finds accounts made in
+    # Minty meanwhile, matches too - never the mirror, which deleted or archived what the new
+    # organisation lacked.
+    reason = matching.needs_matching(entity, tenant_id)
+    begins_matching = reason is not None
     with transaction.atomic():
         if begins_matching:
-            matching.begin(entity.id, grant.access_token, tenant_id)
+            matching.begin(entity.id, grant.access_token, tenant_id, reason=reason)
         else:
             connect.mirror_on_connect(entity.id, grant.access_token, tenant_id)
         values = {"xero_org_id": tenant_id, "xero_tenant_name": tenant_name,

@@ -26,6 +26,17 @@ logged (``account_change_log``, one batch); ``setup_mode`` becomes ``xero`` and
 contact with the same name (case and surrounding spaces ignored; the active one first, else the
 first by Xero id), else created in Xero under its Minty name; logged in ``contact_change_log``. Any
 Xero refuses are named; the company stays disconnected until they are through (``complete``).
+
+**Phase 3 (owner, 2026-11-12).** ``entities.xero_matching`` (minty-db v0.6) marks an open matching
+and why: ``first`` (the above), ``new_accounts`` (a reconnect to the same organisation found accounts
+made in Minty meanwhile), ``new_org`` (a reconnect to another organisation: every account matched
+again from scratch, nothing mirrored, archived or deleted before Finish) or ``change`` (the matches
+changed on the same page, prefilled; the company stays connected). The scope is every active account
+not linked to the current organisation (all of them for ``change``; for ``first``, Phase 2's own
+accounts). Finish relinks only what changed, may swap two accounts' Xero accounts, clears the marker,
+and resets ``xero_publish_from`` to today for ``first``/``new_org`` (older records stay with the old
+organisation) but keeps it for ``new_accounts``/``change`` (only what is published from then on).
+While a matching is open the sync refreshes only the Xero copies (``sync.sync_company``).
 """
 
 from __future__ import annotations
@@ -38,7 +49,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 from minty_db.models import (
@@ -103,6 +114,13 @@ NOT_PENDING = "This company has nothing to match with Xero."
 NOT_OWN = "That account isn't one to match. Reload the page and try again."
 WRONG_KIND = "That Xero account can't be used for this one. Choose one from the list."
 NO_TOKEN = "Xero needs to be connected again. Sign in to Xero once more to carry on."
+NOT_CONNECTED = "Connect this company to Xero before changing its matches."
+ALREADY_OPEN = "Finish the matching that's already open before changing the matches."
+NOT_CHANGING = "There's no change of matches to cancel."
+#: Why a matching is open (``entities.xero_matching``).
+REASONS = ("first", "new_accounts", "new_org", "change")
+#: Accounts made in Minty (onboarding's templates and a person's own), as ``sync.MINTY_MADE``.
+MINTY_MADE = ("template", "user")
 CONTACTS_UNANSWERED = "Xero didn't send your contacts just now. Mind trying again in a moment?"
 #: Daily closing moves cash from the float to the bank: they are two accounts (onboarding's
 #: accounting.SAME_BANK), so they never share a Xero account - combining would make them one.
@@ -130,26 +148,73 @@ def own_accounts(entity_id):
     ).exclude(record_status="archived")
 
 
-def own_suppliers(entity_id):
-    """The company's own suppliers still to link: active, no Xero id, not combined away."""
+def own_suppliers(entity_id, org=None):
+    """The company's suppliers still to link: active, not combined away, with no Xero id - or, given
+    the current organisation, one of another organisation (Phase 3: a new organisation)."""
+    unlinked = Q(xero_contact_id__isnull=True) | Q(xero_contact_id="")
+    if org:
+        unlinked |= Q(xero_org_id__isnull=False) & ~Q(xero_org_id=str(org))
     return XeroContactSync.objects.filter(entity_id=entity_id, merged_into__isnull=True).exclude(
-        record_status="archived").filter(Q(xero_contact_id__isnull=True) | Q(xero_contact_id=""))
+        record_status="archived").filter(unlinked)
 
 
-def needs_matching(entity: Entity) -> bool:
-    """A connect must match first: the company keeps its books in Minty and has its own accounts."""
-    return entity.setup_mode == "minty" and own_accounts(entity.id).exists()
+def _active_accounts(entity_id):
+    """Every account a matching may touch: active, not combined away, not archived in Xero."""
+    return (AccountInfo.objects.filter(entity_id=entity_id, merged_into__isnull=True)
+            .exclude(record_status="archived").exclude(status="ARCHIVED"))
+
+
+def _org_guids(entity_id, org) -> set:
+    """The Xero ids of the organisation's accounts as the copies hold them (ACTIVE)."""
+    if not org:
+        return set()
+    return set(XeroAccount.objects.filter(entity_id=entity_id, xero_org_id=str(org), status="ACTIVE")
+               .values_list("xero_guid", flat=True))
+
+
+def scope_accounts(entity_id, org, reason):
+    """The accounts a matching for ``reason`` covers (Phase 3). ``first``: the company's own accounts
+    (Phase 2); ``change``: every active one; ``new_org`` / ``new_accounts``: every active one not
+    linked to ``org`` (no Xero id, or one the organisation's copies don't hold), with Minty's hidden
+    system rows left out for ``new_accounts``."""
+    if reason == "first" or not reason:
+        return own_accounts(entity_id)
+    rows = _active_accounts(entity_id)
+    if reason == "change":
+        return rows
+    rows = rows.filter(Q(xero_account_id__isnull=True) | ~Q(xero_account_id__in=_org_guids(entity_id, org)))
+    if reason == "new_accounts":
+        rows = rows.exclude(is_system=True, xero_account_id__isnull=True)
+    return rows
+
+
+def needs_matching(entity: Entity, tenant_id=None) -> str | None:
+    """Why a connect to ``tenant_id`` must match first, or None (the mirror, as before): the company
+    keeps its books in Minty with its own accounts (``first``); it had another organisation
+    (``new_org``); or, the same organisation, accounts were made in Minty meanwhile (``new_accounts``)."""
+    if entity.setup_mode == "minty" and own_accounts(entity.id).exists():
+        return "first"
+    if not tenant_id or not entity.xero_org_id:
+        return None
+    if str(entity.xero_org_id) != str(tenant_id):
+        return "new_org" if _active_accounts(entity.id).exists() else None
+    if entity.setup_mode == "xero" and own_accounts(entity.id).filter(
+            source__in=MINTY_MADE, is_system=False).exists():
+        return "new_accounts"
+    return None
 
 
 def accounts_pending(entity: Entity) -> bool:
-    return entity.setup_mode == "minty" and bool(entity.xero_org_id) and own_accounts(entity.id).exists()
+    """A matching is open (``entities.xero_matching``)."""
+    return entity.xero_matching in REASONS
 
 
 def contacts_pending(entity: Entity) -> bool:
-    """The accounts are matched (Finish ran: ``xero_publish_from`` set) and some suppliers aren't in
-    Xero yet, so the company is still disconnected."""
+    """The accounts are matched (Finish ran: ``xero_publish_from`` set, no matching open) and some
+    suppliers aren't in this organisation yet, so the company is still disconnected."""
     return (entity.setup_mode == "xero" and bool(entity.xero_org_id) and entity.status != "connected"
-            and entity.xero_publish_from is not None and own_suppliers(entity.id).exists())
+            and not entity.xero_matching and entity.xero_publish_from is not None
+            and own_suppliers(entity.id, entity.xero_org_id).exists())
 
 
 def pending(entity: Entity) -> bool:
@@ -219,16 +284,16 @@ def _suggestion(account: AccountInfo, copies: list[XeroAccount]) -> XeroAccount 
     return scored[0][1] if scored and scored[0][0] >= 0.6 else None
 
 
-def auto_pick(entity_id, org) -> int:
-    """Pick each own account whose code and type equal one Xero account's (decision: same code,
-    same type = no question). Existing picks are kept."""
+def auto_pick(entity_id, org, reason="first") -> int:
+    """Pick each account in the matching's scope whose code and type equal one Xero account's
+    (decision: same code, same type = no question). Existing picks are kept."""
     picked = set(AccountMatchDraft.objects.filter(entity_id=entity_id).values_list("account_id", flat=True))
     by_key: dict = {}
     for copy in _copies(entity_id, org):
         if copy.code:
             by_key.setdefault((copy.code, _copy_type(copy)), copy)
     made = 0
-    for account in own_accounts(entity_id):
+    for account in scope_accounts(entity_id, org, reason):
         if account.id in picked:
             continue
         copy = by_key.get((_code(account), _minty_type(account)))
@@ -247,7 +312,7 @@ def read(entity: Entity) -> dict:
     by_id = {c.id: c for c in copies}
     drafts = {d.account_id: d for d in AccountMatchDraft.objects.filter(entity_id=entity.id)}
     used = usage.used_account_ids(entity.id)
-    accounts = sorted(own_accounts(entity.id), key=lambda a: (_code(a), a.name or ""))
+    accounts = sorted(scope_accounts(entity.id, org, entity.xero_matching), key=lambda a: (_code(a), a.name or ""))
     picks_per_copy: dict = {}
     for draft in drafts.values():
         picks_per_copy.setdefault(draft.xero_account_id, []).append(draft.account_id)
@@ -288,6 +353,8 @@ def read(entity: Entity) -> dict:
             combines.append({"xero": by_id[copy_id].name, "accounts": sorted(names.get(i, "") for i in account_ids)})
     return {
         "organisation": entity.xero_tenant_name,
+        # why this matching is open (Phase 3): first | new_accounts | new_org | change
+        "reason": entity.xero_matching,
         "groups": [{"key": key, "title": title, "rows": groups[key]} for key, title in GROUPS if groups[key]],
         "options": [{"id": str(c.id), "code": c.code or "", "name": c.name,
                      "kind": "bank" if _copy_type(c) == "bank" else _class(_copy_type(c))} for c in copies],
@@ -296,7 +363,8 @@ def read(entity: Entity) -> dict:
         "blocking": blocking,
         "will_archive": sorted(to_archive),
         "will_combine": combines,
-        "pending": {"accounts": accounts_pending(entity), "contacts": contacts_pending(entity)},
+        "pending": {"accounts": accounts_pending(entity), "contacts": contacts_pending(entity),
+                    "reason": entity.xero_matching},
         "failed_contacts": [],
     }
 
@@ -316,12 +384,51 @@ def _fill_copies(entity_id, access_token, org) -> None:
         sync._copy_contacts(entity_id, contacts, org)
 
 
-def begin(entity_id, access_token, org) -> None:
-    """The connect of a Minty company: the Xero copies and the automatic picks, nothing else (inside
-    the connect's transaction; ``MirrorFailed`` when Xero sends no chart, which rolls it back)."""
+def begin(entity_id, access_token, org, reason="first") -> None:
+    """A connect that matches first (``needs_matching``): the Xero copies of ``org``, the marker, and
+    the automatic picks - nothing mirrored, archived or deleted (inside the connect's transaction;
+    ``MirrorFailed`` when Xero sends no chart, which rolls it back). The company is disconnected until
+    Finish and its suppliers."""
     _fill_copies(entity_id, access_token, org)
-    made = auto_pick(entity_id, org)
-    logger.info("xero matching: company %s began matching org %s; %s picked automatically", entity_id, org, made)
+    AccountMatchDraft.objects.filter(entity_id=entity_id).exclude(
+        account_id__in=scope_accounts(entity_id, org, reason).values("id")).delete()
+    Entity.objects.filter(id=entity_id).update(xero_matching=reason, status="disconnected")
+    made = auto_pick(entity_id, org, reason)
+    logger.info("xero matching: company %s began matching org %s (%s); %s picked automatically", entity_id, org,
+                reason, made)
+
+
+def start_change(entity_id) -> dict:
+    """Change the matches (Phase 3): a connected company's matching page again, each account on its
+    current Xero account. The company stays connected; publishing goes on."""
+    with transaction.atomic():
+        entity = Entity.objects.select_for_update().get(id=entity_id)
+        if entity.xero_matching:
+            raise Refused(ALREADY_OPEN)
+        if entity.setup_mode != "xero" or not entity.xero_org_id or entity.status != "connected":
+            raise Refused(NOT_CONNECTED)
+        copies = {c.xero_guid: c for c in XeroAccount.objects.filter(
+            entity_id=entity_id, xero_org_id=str(entity.xero_org_id), status="ACTIVE")}
+        AccountMatchDraft.objects.filter(entity_id=entity_id).delete()
+        for account in _active_accounts(entity_id).filter(xero_account_id__in=list(copies)):
+            AccountMatchDraft.objects.create(account_id=account.id, entity_id=entity_id,
+                                             xero_account_id=copies[account.xero_account_id].id, picked_by=None)
+        Entity.objects.filter(id=entity_id).update(xero_matching="change")
+        entity.xero_matching = "change"
+    logger.info("xero matching: company %s is changing its matches", entity_id)
+    return read(entity)
+
+
+def cancel_change(entity_id) -> dict:
+    """Leave a change of matches: nothing changed, the picks dropped."""
+    with transaction.atomic():
+        entity = Entity.objects.select_for_update().get(id=entity_id)
+        if entity.xero_matching != "change":
+            raise Refused(NOT_CHANGING)
+        AccountMatchDraft.objects.filter(entity_id=entity_id).delete()
+        Entity.objects.filter(id=entity_id).update(xero_matching=None)
+        entity.xero_matching = None
+    return read(entity)
 
 
 def _pending_entity(entity_id) -> Entity:
@@ -347,7 +454,7 @@ def _shares_cash_and_bank(entity_id, drafts: dict) -> bool:
 def pick(entity_id, account_id, xero_account_id, user_id) -> dict:
     """Save (or, with no Xero account, clear) one account's pick."""
     entity = _pending_entity(entity_id)
-    account = own_accounts(entity_id).filter(id=account_id).first()
+    account = scope_accounts(entity_id, entity.xero_org_id, entity.xero_matching).filter(id=account_id).first()
     if account is None:
         raise Refused(NOT_OWN, 404)
     with transaction.atomic():
@@ -372,7 +479,7 @@ def refresh(entity_id, access_token) -> dict:
     entity = _pending_entity(entity_id)
     with transaction.atomic():
         _fill_copies(entity_id, access_token, entity.xero_org_id)
-        auto_pick(entity_id, entity.xero_org_id)
+        auto_pick(entity_id, entity.xero_org_id, entity.xero_matching)
     return read(entity)
 
 
@@ -471,8 +578,15 @@ def finish(entity_id, user_id) -> dict:
         entity = Entity.objects.select_for_update().get(id=entity_id)
         if not accounts_pending(entity):
             raise Refused(NOT_PENDING)
+        reason = entity.xero_matching
         sync.lock(entity_id)
-        accounts = list(own_accounts(entity_id).select_for_update())
+        # Two accounts may swap Xero accounts (Phase 3's change): the one-active-link rule and the
+        # active code/name rules are deferrable, checked at COMMIT.
+        if connection.vendor == "postgresql":
+            with connection.cursor() as cursor:
+                cursor.execute("SET CONSTRAINTS ALL DEFERRED")
+        accounts = list(scope_accounts(entity_id, entity.xero_org_id, reason).select_for_update())
+        in_scope = {a.id for a in accounts}
         drafts = {d.account_id: d for d in AccountMatchDraft.objects.filter(entity_id=entity_id)}
         used = usage.used_account_ids(entity_id)
         unmatched_used = [a for a in accounts if a.id in used and a.id not in drafts]
@@ -486,7 +600,7 @@ def finish(entity_id, user_id) -> dict:
         if any(d.xero_account_id not in copies for d in drafts.values()):
             raise Refused(PICK_GONE)
         held = list(AccountInfo.objects.filter(entity_id=entity_id, xero_account_id__in=[
-            c.xero_guid for c in copies.values()]))
+            c.xero_guid for c in copies.values()]).exclude(id__in=in_scope))
         if any(row.id in used for row in held):
             raise Refused("A Xero account you picked is already linked to another account here. Refresh from "
                           "Xero and pick again.")
@@ -504,8 +618,17 @@ def finish(entity_id, user_id) -> dict:
             if account.id in drafts:
                 by_copy.setdefault(drafts[account.id].xero_account_id, []).append(account)
         linked = archived = combined = 0
+        # A changed match first lets go of its old Xero id: (company, Xero id) is unique and not
+        # deferrable, so two accounts swapping Xero accounts would otherwise collide mid-way.
+        moving = [a.id for copy_id, group in by_copy.items()
+                  if not (len(group) == 1 and group[0].xero_account_id == copies[copy_id].xero_guid)
+                  for a in group if a.xero_account_id]
+        if moving:
+            AccountInfo.objects.filter(id__in=moving).update(xero_account_id=None, xero_account_link_id=None)
         for copy_id, group in by_copy.items():
             copy = copies[copy_id]
+            if len(group) == 1 and group[0].xero_account_id == copy.xero_guid:
+                continue  # the match didn't change: nothing to write or log
             survivor = _survivor(group, copy)
             others = [a for a in group if a.id != survivor.id]
             if others:
@@ -521,7 +644,11 @@ def finish(entity_id, user_id) -> dict:
                 _log(batch, entity_id, account, "archived", before, user_id)
                 archived += 1
         AccountMatchDraft.objects.filter(entity_id=entity_id).delete()
-        Entity.objects.filter(id=entity_id).update(setup_mode="xero", xero_publish_from=datetime.now(HK).date())
+        done = {"setup_mode": "xero", "xero_matching": None}
+        if reason in ("first", "new_org", None):
+            # only records from today go to this organisation; older ones stay with the old one
+            done["xero_publish_from"] = datetime.now(HK).date()
+        Entity.objects.filter(id=entity_id).update(**done)
     logger.info("xero matching: company %s finished: %s linked, %s combined, %s archived (batch %s)", entity_id,
                 linked, combined, archived, batch)
     return {"linked": linked, "combined": combined, "archived": archived}
@@ -593,7 +720,7 @@ def link_suppliers(entity_id, access_token, org, user_id) -> list[str]:
             by_name.setdefault(key, contact)
     batch = uuid.uuid4()
     failed: list[str] = []
-    for supplier in list(own_suppliers(entity_id).order_by("name")):
+    for supplier in list(own_suppliers(entity_id, org).order_by("name")):
         match = by_name.get((supplier.name or "").strip().lower())
         with transaction.atomic():
             if match is not None:

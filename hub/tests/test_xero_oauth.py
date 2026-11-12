@@ -971,3 +971,67 @@ def test_a_minty_companys_connect_keeps_every_account_and_goes_to_matching(shop,
     assert AccountInfo.objects.filter(id=own.id, xero_account_id__isnull=True).exists()
     assert XeroContactSync.objects.filter(id=supplier.id).exists()
     assert AccountMatchDraft.objects.filter(account_id=own.id).exists(), "400 = 400, same type: picked"
+
+
+# ---- Phase 3 (owner, 2026-11-12): a reconnect matches instead of mirroring -------------------------
+
+
+def test_a_reconnect_to_another_organisation_matches_instead_of_mirroring(shop, xero):
+    """The new organisation's chart used to be mirrored over the old one: accounts it lacked were
+    deleted, or archived if used. Now every account is matched again from scratch; nothing goes
+    before Finish."""
+    from minty_db.models import AccountMatchDraft
+
+    entity = shop["entity"]
+    Entity.objects.filter(id=entity.id).update(setup_mode="xero", xero_org_id="t-old", status="disconnected")
+    linked = AccountInfo.objects.create(entity_id=entity.id, type="EXPENSE", account_type="expense",
+                                        name="Advertising", code="400", xero_code="400", xero_account_id="old-400",
+                                        status="ACTIVE", source="xero")
+    gone = AccountInfo.objects.create(entity_id=entity.id, type="EXPENSE", account_type="expense", name="Postage",
+                                      code="425", xero_code="425", xero_account_id="old-425", status="ACTIVE",
+                                      source="xero")
+    client = signed_in(shop["owner"])
+
+    resp = callback(client, reconnect_flow(client, entity))
+
+    assert resp["Location"].endswith("/settings/integration/match")
+    company = fresh(entity)
+    assert (company.xero_org_id, company.status, company.xero_matching) == ("t-1", "disconnected", "new_org")
+    for row in (linked, gone):
+        kept = AccountInfo.objects.get(id=row.id)
+        assert (kept.record_status, kept.xero_account_id) == ("active", row.xero_account_id), row.name
+    assert AccountMatchDraft.objects.filter(account_id=linked.id).exists(), "400 = 400, same type: picked"
+    assert not AccountMatchDraft.objects.filter(account_id=gone.id).exists()
+    assert xero.syncs == [], "no sync until Finish"
+
+
+def test_a_reconnect_to_the_same_organisation_matches_only_accounts_added_meanwhile(shop, xero):
+    from minty_db.models import AccountMatchDraft
+
+    entity = shop["entity"]
+    Entity.objects.filter(id=entity.id).update(setup_mode="xero", xero_org_id="t-1", status="disconnected")
+    linked = AccountInfo.objects.create(entity_id=entity.id, type="EXPENSE", account_type="expense",
+                                        name="Advertising", code="400", xero_code="400", xero_account_id="new-400",
+                                        status="ACTIVE", source="xero")
+    added = AccountInfo.objects.create(entity_id=entity.id, type="EXPENSE", account_type="expense",
+                                       name="Entertainment", code="420", xero_code="420", status="ACTIVE",
+                                       source="user")
+    client = signed_in(shop["owner"])
+
+    resp = callback(client, reconnect_flow(client, entity))
+
+    assert resp["Location"].endswith("/settings/integration/match")
+    company = fresh(entity)
+    assert (company.status, company.xero_matching) == ("disconnected", "new_accounts")
+    assert AccountInfo.objects.get(id=linked.id).xero_account_id == "new-400", "untouched"
+    assert list(AccountMatchDraft.objects.filter(entity_id=entity.id).values_list("account_id", flat=True)) == [
+        added.id], "only the account added meanwhile: 420 = 420"
+
+
+def test_a_plain_reconnect_to_the_same_organisation_opens_no_matching(shop, xero):
+    entity = shop["entity"]
+    Entity.objects.filter(id=entity.id).update(setup_mode="xero", xero_org_id="t-1", status="disconnected")
+    client = signed_in(shop["owner"])
+    resp = callback(client, reconnect_flow(client, entity))
+    assert resp["Location"] == settings_tab(entity)
+    assert fresh(entity).xero_matching is None

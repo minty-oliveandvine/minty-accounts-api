@@ -6,6 +6,7 @@ from django.urls import path
 import hub.addresses  # noqa: F401 - registers the <entity:...> converter
 from hub import (
     company,
+    company_chart,
     contact,
     email_signin,
     entities,
@@ -54,6 +55,11 @@ urlpatterns = [
     path("api/me/company/invitations/<str:invitation_id>/cancel", company.invitation_cancel, name="invitation_cancel"),
     path("api/me/company/invitations/<str:invitation_id>/resend", company.invitation_resend, name="invitation_resend"),
     path("api/me/company/integration", company.company_integration, name="company_integration"),
+    # Settings' accounts and contacts, held by onboarding-api (2026-11-12)
+    path("api/me/company/accounts", company_chart.company_accounts, name="company_accounts"),
+    path("api/me/company/accounts/<str:account_id>", company_chart.company_account, name="company_account"),
+    path("api/me/company/contacts", company_chart.company_contacts, name="company_contacts"),
+    path("api/me/company/contacts/<str:contact_id>", company_chart.company_contact, name="company_contact"),
     path("api/me/company/xero/disconnect", company.company_xero_disconnect, name="company_xero_disconnect"),
     path("api/me/company/xero/release", company.company_xero_release, name="company_xero_release"),
     # Settings Phase 2 (2026-11-11): matching a Minty company's accounts to Xero on connect.
@@ -64,6 +70,10 @@ urlpatterns = [
          name="company_xero_matching_finish"),
     path("api/me/company/xero/matching/contacts", xero_matching.company_xero_matching_contacts,
          name="company_xero_matching_contacts"),
+    path("api/me/company/xero/matching/change", xero_matching.company_xero_matching_change,
+         name="company_xero_matching_change"),
+    path("api/me/company/xero/matching/cancel", xero_matching.company_xero_matching_cancel,
+         name="company_xero_matching_cancel"),
     # Phase 5D: the onboarding wizard's routes minty-onboarding-api and minty-subscription-api forward to.
     path("api/onboarding/modules", onboarding.onboarding_modules, name="onboarding_modules"),
     path("api/onboarding/invite", onboarding.onboarding_invite, name="onboarding_invite"),
