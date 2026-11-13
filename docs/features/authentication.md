@@ -255,7 +255,8 @@ minty-db; change them together.
   flashed and a redirect to `/entity`, which carries it to minty-web's company list as a notice.
 - A company's members are managed per company - minty-web's Users tab over `/api/me/company/*`
   (`hub/company.py`): each action its permission, then the rank rule (strict since 2026-11-12: nobody gives
-  or manages a role at or above their own; `minty_shared.policy`), then the payer and only-admin
+  or manages a role at or above their own, except that an admin manages admins too, 2026-11-13;
+  `minty_shared.policy` v0.6), then the payer and only-admin
   guards (`docs/features/accounts-api.md`, 5C).
 - Tightened in the move (2026-11-06): connecting a company to Xero needs `XERO_SETTINGS_UPDATE` on
   it (Flask asked only `ENTITY_CREATE`); choosing onboarding modules needs an **approved** member.

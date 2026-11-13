@@ -230,14 +230,50 @@ def test_the_payer_keeps_admin(shop, facts):
                 {"role": "admin"}).status_code == 200
 
 
-def test_an_admin_manages_no_other_admin(shop):
-    """Strict (owner, 2026-11-12): you manage only roles below yours - not another admin, not yourself."""
+def test_an_admin_manages_other_admins(shop, facts):
+    """Admin is exempt from the same-rank rule (owner, 2026-11-13): an admin re-roles and removes
+    another admin; the page offers it. Never a super_admin."""
+    entity = shop["entity"]
+    second = member(entity, "second@test.com", "admin")
+    page = users_page(shop["admin"], entity)
+    rows = {m["email"]: m for m in page["members"]}
+    assert rows["second@test.com"]["can_change_role"] is True and rows["second@test.com"]["can_remove"] is True
+    assert [r["value"] for r in page["roles"]] == ["admin", "accountant", "shop_manager", "cashier"]
+    changed = call("patch", f"/api/me/company/users/{second.id}", shop["admin"], entity.id, {"role": "accountant"})
+    assert changed.status_code == 200, changed.json()
+    assert call("patch", f"/api/me/company/users/{second.id}", shop["admin"], entity.id,
+                {"role": "admin"}).status_code == 200
+    gone = call("delete", f"/api/me/company/users/{second.id}", shop["admin"], entity.id)
+    assert gone.status_code == 200, gone.json()
+    assert not UserEntity.objects.filter(user_id=second.id, entity_id=entity.id).exists()
+    owner = member(entity, "owner@test.com", "super_admin")
+    for method, body in (("delete", None), ("patch", {"role": "accountant"})):
+        assert call(method, f"/api/me/company/users/{owner.id}", shop["admin"], entity.id, body).status_code == 403
+
+
+def test_an_admin_steps_down_or_leaves_only_while_another_admin_holds_the_company(shop, facts):
+    """Themselves too (owner, 2026-11-13: "yes, guarded"): the only admin and the payer are kept."""
+    entity, me = shop["entity"].id, shop["admin"]
+    for method, body in (("delete", None), ("patch", {"role": "accountant"})):
+        resp = call(method, f"/api/me/company/users/{me.id}", me, entity, body)
+        assert resp.status_code == 409 and "only admin" in resp.json()["error"], method
     second = member(shop["entity"], "second@test.com", "admin")
-    for target in (second, shop["admin"]):
-        for method, body in (("delete", None), ("patch", {"role": "accountant"})):
-            resp = call(method, f"/api/me/company/users/{target.id}", shop["admin"], shop["entity"].id, body)
-            assert resp.status_code == 403, (target.email, method)
-    assert UserEntity.objects.get(user_id=second.id, entity_id=shop["entity"].id).role == "admin"
+    facts["value"] = {**facts["value"], "payer": str(me.id), "payers": [str(me.id)]}
+    removal = call("delete", f"/api/me/company/users/{me.id}", me, entity)
+    assert removal.status_code == 409 and removal.json()["error"].startswith("I can't remove the person who pays")
+    demotion = call("patch", f"/api/me/company/users/{me.id}", me, entity, {"role": "accountant"})
+    assert demotion.status_code == 409 and demotion.json()["error"].startswith("I can't take admin away")
+    facts["value"] = {**facts["value"], "payer": str(second.id), "payers": [str(second.id)]}
+    stepped = call("patch", f"/api/me/company/users/{me.id}", me, entity, {"role": "accountant"})
+    assert stepped.status_code == 200, stepped.json()
+    assert UserEntity.objects.get(user_id=me.id, entity_id=entity).role == "accountant"
+
+
+def test_an_admin_removes_themselves_while_another_admin_remains(shop):
+    member(shop["entity"], "second@test.com", "admin")
+    resp = call("delete", f"/api/me/company/users/{shop['admin'].id}", shop["admin"], shop["entity"].id)
+    assert resp.status_code == 200, resp.json()
+    assert not UserEntity.objects.filter(user_id=shop["admin"].id, entity_id=shop["entity"].id).exists()
 
 
 def test_the_only_admin_is_neither_demoted_nor_removed_and_a_deactivated_admin_does_not_count(shop):
@@ -318,9 +354,18 @@ def test_an_invitation_needs_both_names(shop, names):
     assert (resp.status_code, resp.json()) == (400, {"error": "I need their first and last name."})
 
 
+def test_an_admin_invites_an_admin(shop):
+    """Admin is exempt from the same-rank rule (owner, 2026-11-13)."""
+    sent = invite(shop["admin"], shop["entity"], role="admin")
+    assert sent.status_code == 201, sent.json()
+    assert [(i["role"], i["can_manage"]) for i in users_page(shop["admin"], shop["entity"])["invitations"]] == [
+        ("admin", True)]
+
+
 def test_an_invitations_role_is_assignable_and_not_above_the_inviter(shop):
     assert invite(shop["admin"], shop["entity"], role="entity_base").status_code == 400
     assert invite(shop["manager"], shop["entity"], role="admin").status_code == 403
+    assert invite(shop["accountant"], shop["entity"], role="accountant").status_code == 403
     assert invite(shop["cashier"], shop["entity"]).status_code == 403  # no USER_INVITE
     assert not Invitation.objects.exists()
 

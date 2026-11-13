@@ -207,10 +207,11 @@ Flask's bearer and public routes, moved with their paths, answers (Flask's `json
 
 **5C, a company's Users and Entity & Integration tabs** (`hub/company.py`). The company always
 comes from `?entity=`, never the body. Each action checks its own permission, then the rank rule:
-strict since 2026-11-12 (owner): you give and manage only roles BELOW your own - an admin
-manages no other admin and not themselves (a super_admin does). The rules are `minty_shared.policy`
-(v0.5), one copy for every backend; `hub/policy.py` keeps only the membership reads. The
-only-admin guard is reached by a super_admin or Minty staff on an ordinary membership.
+strict since 2026-11-12 (owner): you give and manage only roles BELOW your own, except that an
+admin also invites, re-roles and removes admins, themselves included (owner, 2026-11-13), never a
+super_admin. The rules are `minty_shared.policy` (v0.6), one copy for every backend; `hub/policy.py`
+keeps only the membership reads. The payer, pending-handover and only-admin guards still refuse
+(409): the only admin can't step down or leave, and nor can the payer.
 - **Users.** The members, the pending invitations, the roles this person may give, and who pays.
   The payer comes from minty-subscription-api; when it can't answer, the badge is just missing.
 - **Invitations** (`hub/invitations.py`, Flask's invite service).
