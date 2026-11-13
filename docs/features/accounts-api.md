@@ -175,6 +175,9 @@ Flask's bearer and public routes, moved with their paths, answers (Flask's `json
   approved, else 401 `{"error": "unauthorized"}`.
 - CORS answers minty-web, the payments app, Petty Cash, their preview sets and
   `EXTRA_FRONTEND_ORIGINS`. Refusals carry the headers too.
+- A crash in an `/api/me/` route (`HubErrorMiddleware`) is logged with its traceback and answers 500
+  `{"error": "Something went wrong on my end. Mind trying again?"}` with the headers. Django's bare 500
+  had none, so the browser couldn't read it and minty-web said "I couldn't reach the server".
 
 **Shared pieces:**
 - `hub/policy.py`: the other services' permission rules, copied unchanged.
@@ -426,7 +429,9 @@ pointing at nothing.
   methods, `account_module`, `entity_account_xero` re-pointed; the others archived with
   `merged_into_id`); each picked account takes Xero's identity IN PLACE (Xero id, code, name, type, link)
   so every reference stays, gets a Petty Cash module row if it had none (X2/X3's tick), and its bill code
-  and unpublished bill lines follow a new code; unused unmatched accounts archived (never deleted); all
+  and unpublished bill lines follow a new code (combined accounts' bill codes become one - the
+  survivor's, carrying the default - as `uq_ebax_entity_xero_account` allows one per Xero account;
+  two of them failed every Finish until 2026-11-13); unused unmatched accounts archived (never deleted); all
   logged in `account_change_log` (one batch); drafts deleted; `setup_mode = 'xero'` and
   `xero_publish_from` = today (Hong Kong; owner: only records from then on go to Xero).
 - **Suppliers** (after the replace commits): each own supplier linked to the Xero contact of its name

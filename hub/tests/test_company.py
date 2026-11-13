@@ -77,6 +77,23 @@ def test_the_preflight_names_delete_too(db):
     assert "DELETE" in resp["Access-Control-Allow-Methods"] and resp["Access-Control-Allow-Origin"] == WEB
 
 
+def test_a_crash_in_a_hub_route_answers_the_house_sentence_with_cors(shop, monkeypatch, caplog):
+    """A bare 500 has no CORS headers, so the browser can't read it and minty-web says "I couldn't
+    reach the server" (Finish on the matching page, 2026-11-13). The hub's crash keeps the headers,
+    and the traceback is logged."""
+    def crash(user, entity_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(company, "_integration_page", crash)
+    resp = Client(raise_request_exception=False).get(
+        f"/api/me/company/integration?entity={shop['entity'].id}", HTTP_ORIGIN=WEB,
+        HTTP_AUTHORIZATION=f"Bearer {token(shop['admin'].id)}")
+    assert resp.status_code == 500
+    assert resp.json() == {"error": "Something went wrong on my end. Mind trying again?"}
+    assert resp["Access-Control-Allow-Origin"] == WEB
+    assert any(r.exc_info and "boom" in str(r.exc_info[1]) for r in caplog.records), "the traceback is logged"
+
+
 def test_no_token_no_company_and_someone_elses_company_are_refused(shop):
     assert call("get", "/api/me/company/users", None, shop["entity"].id).status_code == 401
     assert call("get", "/api/me/company/users", shop["admin"]).status_code == 403

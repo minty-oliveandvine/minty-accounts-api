@@ -56,6 +56,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "hub.links.PreviewMiddleware",
     "hub.terms_gate.TermsGateMiddleware",
+    "hub.transport.HubErrorMiddleware",
 ]
 MINTY_HTTP_LOGGER = "minty-accounts-api.http"
 #: A secret in a path (an invitation's accept link) never reaches the log line.

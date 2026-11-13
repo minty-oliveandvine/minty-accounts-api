@@ -12,10 +12,14 @@ the Flask retirement, 2026-11-06).
   ``EXTRA_FRONTEND_ORIGINS`` entry for them, or a preview-set host for them; otherwise minty-web's
   (the browser then refuses the stranger). ``Vary: Origin``, no credentials. Every refusal carries
   the headers too: a bare 401 reads to the browser as a CORS failure, not a lapsed token.
+- **A crash** in a hub route (``HubErrorMiddleware``) is logged with its traceback and answers 500
+  ``{"error": HOUSE}`` with the headers: Django's bare 500 has none, so the browser couldn't read it
+  and minty-web said "I couldn't reach the server" (2026-11-13).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 
@@ -72,6 +76,30 @@ def respond(request: HttpRequest, payload, status: int = 200) -> HttpResponse:
 def refuse(request: HttpRequest, error: str, status: int) -> HttpResponse:
     """A sentence minty-web shows as it stands (``unauthorized`` makes it fetch a fresh token)."""
     return respond(request, {"error": error}, status)
+
+
+#: The house sentence for a crash (minty-web's ``HOUSE_FALLBACK``).
+HOUSE = "Something went wrong on my end. Mind trying again?"
+#: Every hub route lives under this prefix (config/urls.py, Phase 5B-5C).
+HUB_PREFIX = "/api/me/"
+
+logger = logging.getLogger("minty-accounts-api")
+
+
+class HubErrorMiddleware:
+    """A hub route's unhandled exception: logged with its traceback, answered with CORS."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        return self.get_response(request)
+
+    def process_exception(self, request: HttpRequest, exception: Exception) -> HttpResponse | None:
+        if not request.path.startswith(HUB_PREFIX):
+            return None
+        logger.exception("hub route %s %s failed", request.method, request.path)
+        return refuse(request, HOUSE, 500)
 
 
 def bearer_claims(request: HttpRequest) -> dict | None:
