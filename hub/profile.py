@@ -72,12 +72,15 @@ def entity_context(user: User, entity_id: str) -> dict | None:
 
 def can_view_subscriptions(user: User) -> bool:
     """Whether the sidebar offers Manage subscriptions (owner, 2026-11-12): to every admin and
-    accountant of a company (approved membership), and to every subscriber (a payer on any
-    module row). The list itself is subscription-api's and applies the same rule per company;
-    changing a row stays the subscriber's alone."""
+    accountant of a company (approved membership), and to every subscriber - a payer on any
+    module row, or (2026-11-13) the subscriber a live company names before billing is confirmed
+    (``entities.subscriber_user_id``). The list itself is subscription-api's and applies the same
+    rule per company; changing a row stays the subscriber's alone."""
     roles = (UserEntity.objects.filter(user_id=user.id, approved=True)
              .values_list("role", flat=True).distinct())
     if any(role_at_least(role, "accountant") for role in roles):
+        return True
+    if Entity.objects.filter(subscriber_user_id=user.id, archived_at__isnull=True).exists():
         return True
     return EntityModuleSubscription.objects.filter(payer_user_id=user.id).exists()
 

@@ -206,7 +206,9 @@ Flask's bearer and public routes, moved with their paths, answers (Flask's `json
 - **My Profile.** A changed email moves the username when the username was the email; a taken
   address is 422. `user.can_view_subscriptions` (2026-11-12) tells the shared sidebar whether to
   offer Manage subscriptions. It is true for anyone with an approved membership of accountant or
-  higher, or who pays for any company (`entity_module_subscription.payer_user_id`). The list's rows
+  higher, who pays for any company (`entity_module_subscription.payer_user_id`), or who is a live
+company's subscriber before billing is confirmed (`entities.subscriber_user_id`, minty-db v0.9,
+2026-11-13). The list's rows
   and who may change them are minty-subscription-api's (`can_manage`).
 - **The Terms gate.** The recorded fingerprint is the manifest's; a mismatch is 409
   `document_mismatch`; recording is idempotent, `source = hub`.

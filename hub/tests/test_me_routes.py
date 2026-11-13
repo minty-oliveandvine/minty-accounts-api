@@ -9,6 +9,7 @@ import uuid
 import pytest
 from django.core import mail
 from django.test import Client
+from django.utils import timezone
 from minty_db.models import Entity, TermsConsent, User, UserEntity
 
 from hub import contact, registry
@@ -77,6 +78,20 @@ def test_manage_subscriptions_is_for_admins_accountants_and_subscribers(db, role
     if pays:
         _pays_for(me, entity)
     assert call("get", "/api/me/profile", me).json()["user"]["can_view_subscriptions"] is expected
+
+
+def test_a_designated_subscriber_is_offered_manage_subscriptions(db):
+    """Owner, 2026-11-13: a company's subscriber before billing is confirmed (its creator, or
+    whoever it was handed to) is offered the item even as a cashier; an archived company's not."""
+    me = make_user()
+    entity = acme(me, role="cashier")
+    assert call("get", "/api/me/profile", me).json()["user"]["can_view_subscriptions"] is False
+
+    Entity.objects.filter(id=entity.id).update(subscriber_user_id=me.id)
+    assert call("get", "/api/me/profile", me).json()["user"]["can_view_subscriptions"] is True
+
+    Entity.objects.filter(id=entity.id).update(archived_at=timezone.now())
+    assert call("get", "/api/me/profile", me).json()["user"]["can_view_subscriptions"] is False
 
 
 def test_the_company_it_was_opened_from_with_the_persons_role(db):
