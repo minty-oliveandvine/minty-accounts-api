@@ -125,13 +125,18 @@ def test_the_users_tab_reads_the_members_their_rights_and_the_roles_one_may_give
     assert rows["admin@test.com"]["role_label"] == "Admin" and rows["admin@test.com"]["initials"] == "AA"
 
 
-def test_the_subscriber_is_the_payer_not_a_rank_and_unknown_marks_nobody(shop, facts):
-    facts["value"] = {**facts["value"], "payer": str(shop["accountant"].id)}
-    assert [m["email"] for m in users_page(shop["admin"], shop["entity"])["members"] if m["subscriber"]] == [
-        "acc@test.com"]
-    facts["value"] = None  # display only: the page still opens
-    page = users_page(shop["admin"], shop["entity"])
-    assert not any(m["subscriber"] for m in page["members"])
+def test_the_subscriber_tag_is_entities_subscriber_not_a_rank_or_the_payer(shop, facts):
+    """entities.subscriber_user_id (minty-db v0.9; owner, 2026-11-13): the creator, or whoever it was
+    handed to - tagged on a trial too, before anyone pays (Dine at Venus 2 had no tag). It mirrors the
+    payer once billing is confirmed, so subscription-api isn't asked."""
+    def tagged():
+        return [m["email"] for m in users_page(shop["admin"], shop["entity"])["members"] if m["subscriber"]]
+
+    assert tagged() == [], "not assigned: nobody"
+    Entity.objects.filter(id=shop["entity"].id).update(subscriber_user_id=shop["accountant"].id)
+    assert tagged() == ["acc@test.com"], "a trial: no payer yet"
+    facts["value"] = None  # subscription-api down: the tag doesn't need it
+    assert tagged() == ["acc@test.com"]
 
 
 def test_a_cashier_may_not_open_the_tab(shop):

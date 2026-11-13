@@ -223,8 +223,10 @@ admin also invites, re-roles and removes admins, themselves included (owner, 202
 super_admin. The rules are `minty_shared.policy` (v0.6), one copy for every backend; `hub/policy.py`
 keeps only the membership reads. The payer, pending-handover and only-admin guards still refuse
 (409): the only admin can't step down or leave, and nor can the payer.
-- **Users.** The members, the pending invitations, the roles this person may give, and who pays.
-  The payer comes from minty-subscription-api; when it can't answer, the badge is just missing.
+- **Users.** The members, the pending invitations, the roles this person may give, and the
+  "Subscriber" tag: `entities.subscriber_user_id` (minty-db v0.9; the creator or whoever it was handed
+  to, on a trial too - subscription-api keeps it on the payer once billing is confirmed). It was the
+  payer until 2026-11-13, so a trial company tagged nobody.
 - **Invitations** (`hub/invitations.py`, Flask's invite service).
   - The address follows the invitations' email rule and both names are needed; the role is one of
     the four assignable roles.

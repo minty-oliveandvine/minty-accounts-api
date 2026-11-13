@@ -99,10 +99,9 @@ def _users_page(user: User, entity_id: str) -> dict:
     org = Entity.objects.get(id=entity_id)
     rows = (UserEntity.objects.filter(entity_id=entity_id, approved=True).select_related("user")
             .order_by("user__first_name", "user__last_name", "user__email"))
-    try:
-        payer = subscription_client.entity_facts(entity_id).get("payer")
-    except subscription_client.SubscriptionUnavailable:
-        payer = None  # display only: the badge is missing, no change is allowed on it
+    # The tag is entities.subscriber_user_id (minty-db v0.9): the creator or whoever it was handed to,
+    # on a trial too; subscription-api keeps it on the payer once billing is confirmed.
+    subscriber = str(org.subscriber_user_id) if org.subscriber_user_id else None
     can_assign = has_permission(user, Permission.USER_ROLE_ASSIGN, entity_id)
     can_delete = has_permission(user, Permission.USER_ROLE_DELETE, entity_id)
     can_invite = has_permission(user, Permission.USER_INVITE, entity_id)
@@ -112,7 +111,7 @@ def _users_page(user: User, entity_id: str) -> dict:
         may_touch = can_manage_role_assignment_for_entity(user, role, entity_id)
         return {"id": str(person.id), "first_name": person.first_name or "", "last_name": person.last_name or "",
                 "email": person.email or person.username or "", "initials": initials(person), "role": role,
-                "role_label": role_label(role), "subscriber": payer is not None and str(payer) == str(person.id),
+                "role_label": role_label(role), "subscriber": subscriber == str(person.id),
                 "is_you": person.id == user.id, "can_change_role": can_assign and may_touch,
                 "can_remove": can_delete and may_touch}
 
