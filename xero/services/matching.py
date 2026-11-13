@@ -553,10 +553,20 @@ def _link(entity_id, account: AccountInfo, copy: XeroAccount, batch, user_id, ex
     account.refresh_from_db()
     old_codes = {c for c in (before[0], *extra_codes) if c}
     if old_codes:
-        EntityBillAccountXero.objects.filter(entity_id=entity_id, account_code__in=old_codes).filter(
-            Q(xero_account_id__isnull=True) | Q(xero_account_id="")).update(
-            account_code=copy.code or "", account_name=account.name, account_type=copy.xero_type,
-            xero_account_id=copy.xero_guid)
+        # One bill code per Xero account (uq_ebax_entity_xero_account): accounts combined into it had
+        # one each, so the survivor's (else the first) takes the Xero account and the others go.
+        blank = EntityBillAccountXero.objects.filter(entity_id=entity_id, account_code__in=old_codes).filter(
+            Q(xero_account_id__isnull=True) | Q(xero_account_id=""))
+        rows = list(blank.order_by("sort_order", "account_code"))
+        holder = EntityBillAccountXero.objects.filter(entity_id=entity_id, xero_account_id=copy.xero_guid).first()
+        if holder is None and rows:
+            holder = next((r for r in rows if r.account_code == before[0]), rows[0])
+            EntityBillAccountXero.objects.filter(id=holder.id).update(
+                account_code=copy.code or "", account_name=account.name, account_type=copy.xero_type,
+                xero_account_id=copy.xero_guid)
+        if holder is not None and any(r.is_default for r in rows):
+            EntityBillAccountXero.objects.filter(id=holder.id).update(is_default=True)
+        blank.exclude(id=holder.id if holder else None).delete()
         BillLine.objects.filter(bill__entity_id=entity_id, account_code__in=old_codes).exclude(
             bill__published="published").update(account_code=copy.code or "", account_id=account.id)
     EntityAccountXero.objects.filter(account_id=account.id).update(

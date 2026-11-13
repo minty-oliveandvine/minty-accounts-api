@@ -242,6 +242,23 @@ def test_finish_links_in_place_combines_archives_and_logs(minty, xero):
     assert not AccountMatchDraft.objects.filter(entity_id=entity.id).exists()
 
 
+def test_finish_combines_accounts_that_each_have_a_bill_code(minty, xero):
+    """Both accounts picked to one Xero account had a bill code (production, 2026-11-13: 6010 Other
+    Expense and 6900 Cash Over / Short to one Xero account): one bill code takes the Xero account, the
+    other goes - two would break the one-row-per-Xero-account key and Finish failed every time."""
+    entity = minty["entity"]
+    EntityBillAccountXero.objects.filter(entity_id=entity.id, account_code="6001").update(is_default=False)
+    EntityBillAccountXero.objects.create(entity_id=entity.id, account_code="6002", account_name="Salaries - Part Time",
+                                         account_type="EXPENSE", xero_account_id="", is_active=True, is_default=True)
+    _match_everything_used(minty)
+
+    resp = call("post", BASE + "/finish", minty["admin"], entity.id)
+    assert resp.status_code == 200, resp.content
+    codes = EntityBillAccountXero.objects.filter(entity_id=entity.id)
+    assert list(codes.values_list("account_code", "xero_account_id")) == [("477", "x-wages")]
+    assert codes.get().is_default, "the default bill code stays the default"
+
+
 # ---- suppliers ---------------------------------------------------------------------------------------
 
 
