@@ -322,6 +322,71 @@ def test_a_used_account_xero_dropped_is_archived_not_deleted(company, xero):
     assert travel.status == "ACTIVE", "Xero has it again: the same row comes back"
 
 
+# ---- a replaced account takes its settings with it (2026-11-13) ------------------------------------
+
+
+def _petty_settings(company, row):
+    from minty_db.models import EntityPettycashSettings
+
+    return EntityPettycashSettings.objects.create(entity_id=company.id, pettycash_account_id=row.id,
+                                                  discrepancy_bank_account_id=row.id)
+
+
+def test_an_account_xero_replaced_under_the_same_code_takes_over_its_settings(company, xero):
+    """A Bank 1 archived in Xero and made again (a new AccountID, the same code) left Petty Cash
+    on the archived row, and every publish into it failed (2026-11-12, "Testing on 12 Nov 2026")."""
+    xero.accounts = [acct("old-bank", "1011", "Bank 1", "BANK"), acct("bank-2", "1012", "Bank 2", "BANK")]
+    _run(company)
+    old = _accounts(company)["old-bank"]
+    _petty_settings(company, old)
+    xero.accounts = [acct("new-bank", "1011", "Bank 1", "BANK"), acct("bank-2", "1012", "Bank 2", "BANK")]
+
+    _run(company)
+
+    old.refresh_from_db()
+    new = _accounts(company)["new-bank"]
+    assert old.status == "ARCHIVED" and old.merged_into_id is None
+    from minty_db.models import EntityPettycashSettings
+
+    saved = EntityPettycashSettings.objects.get(entity_id=company.id)
+    assert (saved.pettycash_account_id, saved.discrepancy_bank_account_id) == (new.id, new.id)
+
+
+def test_a_setting_left_on_an_earlier_replaced_account_is_moved_by_the_next_sync(company, xero):
+    """The company already caught: archived by a sync before this rule, its replacement already stored."""
+    xero.accounts = [acct("new-bank", "1011", "Bank 1", "BANK")]
+    _run(company)
+    old = AccountInfo.objects.create(entity_id=company.id, xero_account_id="old-bank", xero_code="1011",
+                                     name="Bank 1", type="BANK", status="ARCHIVED")
+    _petty_settings(company, old)
+
+    _run(company)
+
+    from minty_db.models import EntityPettycashSettings
+
+    assert EntityPettycashSettings.objects.get(entity_id=company.id).pettycash_account_id == \
+        _accounts(company)["new-bank"].id
+
+
+@pytest.mark.parametrize("arrivals", [
+    [acct("new-a", "1011", "Bank 1", "BANK"), acct("new-b", "1011", "Bank 1b", "BANK")],  # two to choose from
+    [acct("new-exp", "1011", "Bank 1", "EXPENSE")],  # the same code, another type
+    [acct("new-blank", "", "Bank 1", "BANK")],  # no code to know it by
+], ids=["two-candidates", "another-type", "no-code"])
+def test_a_setting_stays_on_the_archived_account_when_its_replacement_is_not_certain(company, xero, arrivals):
+    xero.accounts = [acct("old-bank", "1011" if arrivals[0]["Code"] else "", "Bank 1", "BANK")]
+    _run(company)
+    old = _accounts(company)["old-bank"]
+    _petty_settings(company, old)
+    xero.accounts = arrivals
+
+    _run(company)
+
+    from minty_db.models import EntityPettycashSettings
+
+    assert EntityPettycashSettings.objects.get(entity_id=company.id).pettycash_account_id == old.id
+
+
 def test_a_minty_account_and_a_hand_added_bill_code_are_never_touched(company, xero):
     own = AccountInfo.objects.create(entity_id=company.id, name="Rent", code="420", xero_code="420",
                                      account_type="expense", type="EXPENSE", status="ACTIVE", source="user")

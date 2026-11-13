@@ -120,8 +120,17 @@ It asks Xero for the ACTIVE accounts **once**. Flask asked three times each time
 - Returning ones are re-activated.
 - Renamed or recoded ones are refreshed. A type Petty Cash's chart excludes (bank, equity, sales,
   revenue, other income) keeps its old name, as in Flask.
-- Ones Xero no longer has ACTIVE are deleted, and so is a stale ARCHIVED row. The delete cascades
-  to `entity_account_xero` and clears the Petty Cash mapping that named the account.
+- Ones Xero no longer has ACTIVE are deleted only when nothing uses them (`usage.used_account_ids`)
+  and Minty didn't make them; otherwise they are ARCHIVED and kept, with what uses them still
+  pointing at them (2026-11-11: deleting set them NULL).
+- **A replaced account takes daily closing's settings with it (2026-11-13).** Xero archiving an
+  account and making it again gives it a new AccountID: the old row is archived and a new one
+  added. A Petty Cash setting (`entity_pettycash_settings`'s six account slots) on an archived row
+  Xero no longer sends moves to the one active row of the same code and type that Xero does send.
+  No code, or more than one match, leaves it where it is (logged); Petty Cash Settings then marks it
+  archived. State-based, so the next sync mends a row archived before the rule. Expense and bill
+  lines stay on the archived row. Before this, every publish into such an account failed ("account
+  is no longer active in Xero").
 
 **Account lists:**
 - `entity_account_xero` (Petty Cash's codes: direct costs, expense, overheads, prepayment) gains a

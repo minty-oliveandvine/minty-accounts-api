@@ -14,7 +14,9 @@ times each time Petty Cash Settings opened; this asks once and does all of it:
   only when nothing uses it (``usage.used_account_ids``) and Minty didn't make it; otherwise it is
   ARCHIVED and kept, with every expense line, daily-closing account and sales method still pointing
   at it (2026-11-11: deleting set them NULL). A row with no Xero id - Minty's own - is never
-  touched.
+  touched. One exception for daily closing's accounts (2026-11-13): when Xero REPLACED the account
+  (one active account of the same code and type, a new AccountID), the settings move to it
+  (``_repoint_replaced_settings``); expense and bill lines stay on the archived row.
 - ``entity_account_xero`` (Petty Cash's code list) gains a row per eligible account; the ticks
   (``is_active``) are never changed here.
 - ``entity_bill_account_xero`` (Payment Requests' list) likewise, and loses rows whose account is gone.
@@ -199,12 +201,56 @@ def apply_accounts(entity_id, accounts: list[dict], org) -> dict:
                 row.save(update_fields=sorted(set(changed)))
                 if set(changed) - {"status"}:
                     counts["refreshed"] += 1
+        _repoint_replaced_settings(entity_id, snapshot)
         _mirror_petty_cash(entity_id, org)
         _mirror_bills(entity_id)
         if org:
             _copy_accounts(entity_id, snapshot, org)
     logger.info("xero sync: accounts for company %s: %s", entity_id, counts)
     return counts
+
+
+def _repoint_replaced_settings(entity_id, snapshot: dict) -> None:
+    """Move daily closing's accounts off an account Xero replaced (2026-11-13).
+
+    Xero archiving an account and making it again gives it a new AccountID. The old row was archived
+    above, with the settings still on it, so every publish into it failed. A setting on an archived
+    Xero-made row that Xero no longer sends moves to the ONE active row of the same code and type
+    that Xero does send. No code, or no single match, leaves it where it is: the settings card marks
+    it archived. State-based, so a row archived before this rule is mended by the next sync.
+    """
+    from minty_db.models import EntityPettycashSettings
+
+    settings_row = EntityPettycashSettings.objects.filter(entity_id=entity_id).first()
+    if settings_row is None:
+        return
+    chosen = {slot: getattr(settings_row, slot) for slot in usage.ACCOUNT_SLOTS if getattr(settings_row, slot)}
+    if not chosen:
+        return
+    rows = {r.id: r for r in AccountInfo.objects.filter(entity_id=entity_id)}
+    replacements: dict = {}
+    for slot, account_id in chosen.items():
+        old = rows.get(account_id)
+        if (old is None or old.status != "ARCHIVED" or not old.xero_account_id
+                or old.xero_account_id in snapshot or not (old.xero_code or "").strip()):
+            continue
+        if old.id not in replacements:
+            matches = [r for r in rows.values()
+                       if r.id != old.id and r.status == "ACTIVE" and r.record_status == "active"
+                       and r.merged_into_id is None and r.xero_account_id in snapshot
+                       and r.type == old.type and (r.xero_code or "").strip() == old.xero_code.strip()]
+            replacements[old.id] = matches[0] if len(matches) == 1 else None
+            if len(matches) > 1:
+                logger.warning("xero sync: company %s: %s accounts could replace archived account %s (code %s); "
+                               "its settings stay on it", entity_id, len(matches), old.id, old.xero_code)
+        new = replacements[old.id]
+        if new is not None:
+            setattr(settings_row, slot, new.id)
+            logger.info("xero sync: company %s: %s moved from archived account %s to %s (code %s, replaced in Xero)",
+                        entity_id, slot, old.id, new.id, old.xero_code)
+    moved = [slot for slot in chosen if getattr(settings_row, slot) != chosen[slot]]
+    if moved:
+        settings_row.save(update_fields=[slot.removesuffix("_id") for slot in moved])
 
 
 def _code(account: dict) -> str | None:
